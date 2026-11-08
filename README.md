@@ -25,8 +25,10 @@ open above the icon.
   Uncheck **Show NSFW** to hide NSFW GIFs completely
 - **Warning tag**: right-click → *Mark as Warning* for an orange WARNING label. Like NSFW it's
   blurred, but it's revealed (and plays) while you hover over it
+- **Peek**: hold **Alt** and hover over an NSFW GIF to reveal it and play it
 - **Hover to play**: when checked, GIFs stay still until you hover over them
-- **Bulk select**: click **Select** (or Ctrl+click GIFs) to select several, then use the bar at
+- **Bulk select**: click **Select**, Ctrl+click GIFs, or **hold Ctrl and drag** across GIFs to
+  select several (starting a Ctrl+drag on a selected GIF deselects instead), then use the bar at
   the bottom to **Rename…** (optionally numbered: "Label 1", "Label 2", …), edit **Tags…**
   (add tags to all, or remove tags from all) or **Delete…** them. Esc or **Done** ends selecting
 - **⚙ Settings** page:

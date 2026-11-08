@@ -116,6 +116,9 @@ pub struct LocalGifApp {
     selected: HashSet<u64>,
     /// "Select" mode: clicking a GIF selects it instead of copying it.
     select_mode: bool,
+    /// Ctrl+drag selection in progress: `Some(true)` selects, `Some(false)` deselects
+    /// the GIFs the pointer passes over (decided by the first GIF pressed).
+    paint_select: Option<bool>,
     bulk: Option<bulk::BulkDialog>,
     /// Ids shown in the grid last frame, for "Select all".
     last_shown: Vec<u64>,
@@ -198,6 +201,7 @@ impl LocalGifApp {
             settings_search: String::new(),
             selected: HashSet::new(),
             select_mode: false,
+            paint_select: None,
             bulk: None,
             last_shown: Vec::new(),
             tag_filter: Vec::new(),
@@ -405,7 +409,7 @@ impl LocalGifApp {
                 if ui
                     .toggle_value(&mut self.select_mode, "Select")
                     .on_hover_text(
-                        "Select several GIFs to rename, tag or delete them (or Ctrl+click)",
+                        "Select several GIFs to rename, tag or delete them\n(or Ctrl+click / Ctrl+drag over GIFs)",
                     )
                     .clicked()
                     && !self.select_mode
@@ -629,6 +633,17 @@ impl LocalGifApp {
         let preload = clip.expand2(vec2(0.0, clip.height() * 0.75));
         let mut next_repaint: Option<f64> = None;
         let hover_to_play = self.library.settings.hover_to_play;
+        let (ctrl, alt, pressed, down) = ui.input(|i| {
+            (
+                i.modifiers.command,
+                i.modifiers.alt,
+                i.pointer.primary_pressed(),
+                i.pointer.primary_down(),
+            )
+        });
+        if !down {
+            self.paint_select = None;
+        }
 
         for (entry, (offset, size)) in shown.iter().zip(placed) {
             let rect = Rect::from_min_size(area.min + offset, size);
@@ -648,12 +663,35 @@ impl LocalGifApp {
                 .interact(rect, tile_id, Sense::click())
                 .on_hover_cursor(CursorIcon::PointingHand);
             let hovered = ui.rect_contains_pointer(rect);
+            // Alt + hover reveals (and plays) NSFW and Warning GIFs.
+            let peek = alt && hovered;
+
+            // Ctrl + click / Ctrl + drag across GIFs selects them.
+            // The first GIF pressed decides whether the drag selects or deselects.
+            let paint = if ctrl && hovered && pressed {
+                let select = !self.selected.contains(&entry.id);
+                self.paint_select = Some(select);
+                Some(select) // Applied even if the click is released in this same frame.
+            } else if hovered && down {
+                self.paint_select
+            } else {
+                None
+            };
+            match paint {
+                Some(true) => {
+                    self.selected.insert(entry.id);
+                }
+                Some(false) => {
+                    self.selected.remove(&entry.id);
+                }
+                None => {}
+            }
             let painter = ui.painter_at(rect);
 
             painter.rect_filled(rect, TILE_RADIUS, TILE_BG);
             match &item.state {
-                // NSFW: always censored. Warning: censored until hovered.
-                GifState::Ready(gif) if entry.nsfw || (entry.warning && !hovered) => {
+                // NSFW: censored unless Alt+hovered. Warning: censored until hovered.
+                GifState::Ready(gif) if (entry.nsfw && !peek) || (entry.warning && !hovered) => {
                     // Censored: stretched tiny preview (looks blurred), darkened, label on top.
                     let tex = &gif.censored;
                     egui::Image::from_texture(tex)
@@ -699,7 +737,7 @@ impl LocalGifApp {
                 }
             }
 
-            if entry.nsfw {
+            if entry.nsfw && !peek {
                 draw_badge(&painter, rect, "NSFW", NSFW_RED);
             } else if entry.warning && !hovered {
                 draw_badge(&painter, rect, "WARNING", WARNING_ORANGE);
@@ -762,8 +800,9 @@ impl LocalGifApp {
                 }
             }
 
-            let ctrl = ui.input(|i| i.modifiers.command);
-            if response.clicked() && (self.select_mode || ctrl) {
+            if ctrl {
+                // Selection was already handled on press (see above).
+            } else if response.clicked() && self.select_mode {
                 actions.push(Action::ToggleSelect(entry.id));
             } else if response.clicked() {
                 actions.push(Action::Copy(entry.id));
