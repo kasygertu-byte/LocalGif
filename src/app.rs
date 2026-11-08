@@ -1,10 +1,11 @@
 mod bulk;
 mod packs;
+mod preview;
 mod settings;
 
 use crate::events::{AppEvent, EventSender};
 use crate::library::{AddResult, Conflict, ConflictKind, GifEntry, Library};
-use crate::loader::Loader;
+use crate::loader::{Loader, PREVIEW_BIT};
 use crate::tray::TrayHandle;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Pos2, Rect, Sense, Stroke,
@@ -94,6 +95,7 @@ struct Toast {
 
 enum Action {
     Copy(u64),
+    Preview(u64),
     ToggleSelect(u64),
     ToggleFavorite(u64),
     ToggleNsfw(u64),
@@ -131,6 +133,8 @@ pub struct LocalGifApp {
     /// GIF id + label text being edited.
     editing: Option<(u64, String)>,
     confirm_remove: Option<u64>,
+    /// Enlarged view of one GIF (middle-click / "View larger").
+    preview: Option<Preview>,
     /// "Also delete the original file" checkbox in the delete dialogs.
     delete_originals: bool,
     /// The GIF currently hovered and since when (for the Warning reveal delay).
@@ -155,6 +159,16 @@ pub struct Background {
     pub event_rx: Receiver<AppEvent>,
     /// Taskbar widget mode: `Some` when the system tray icon is running.
     pub tray: Option<TrayHandle>,
+}
+
+struct Preview {
+    id: u64,
+    /// Decoded at full resolution (separately from the small grid thumbnail).
+    state: GifState,
+    /// The user clicked "Show" on a censored NSFW / Warning GIF.
+    reveal: bool,
+    /// Opened this frame: the click that opened it mustn't also close it.
+    just_opened: bool,
 }
 
 struct TagEdit {
@@ -217,6 +231,7 @@ impl LocalGifApp {
             toast: None,
             editing: None,
             confirm_remove: None,
+            preview: None,
             delete_originals: false,
             hover_start: None,
             tag_edit: None,
@@ -275,6 +290,7 @@ impl LocalGifApp {
             || self.tag_edit.is_some()
             || !self.conflicts.is_empty()
             || self.bulk.is_some()
+            || self.preview.is_some()
     }
 
     fn show_toast(&mut self, ctx: &egui::Context, text: impl Into<String>) {
@@ -385,40 +401,59 @@ impl LocalGifApp {
 
     fn handle_decoded(&mut self, ctx: &egui::Context) {
         while let Some(decoded) = self.loader.try_recv() {
+            // Full-resolution decode for the enlarged preview.
+            if decoded.id & PREVIEW_BIT != 0 {
+                let id = decoded.id & !PREVIEW_BIT;
+                if let Some(preview) = self.preview.as_mut().filter(|p| p.id == id) {
+                    preview.state = upload(ctx, decoded.id, decoded.result);
+                }
+                continue;
+            }
             // Ignore results for GIFs that were evicted or removed in the meantime.
             let Some(item) = self.cache.get_mut(&decoded.id) else {
                 continue;
             };
-            item.state = match decoded.result {
-                Ok(gif) => {
-                    let mut textures = Vec::with_capacity(gif.frames.len());
-                    let mut frame_ends = Vec::with_capacity(gif.frames.len());
-                    let mut t = 0.0;
-                    for (i, f) in gif.frames.into_iter().enumerate() {
-                        t += f.delay;
-                        frame_ends.push(t);
-                        textures.push(ctx.load_texture(
-                            format!("gif-{}-{i}", decoded.id),
-                            f.image,
-                            TextureOptions::LINEAR,
-                        ));
-                    }
-                    let censored = ctx.load_texture(
-                        format!("gif-{}-censored", decoded.id),
-                        gif.censored,
-                        TextureOptions::LINEAR,
-                    );
-                    GifState::Ready(LoadedGif {
-                        textures,
-                        censored,
-                        frame_ends,
-                    })
-                }
-                Err(e) => GifState::Failed(e),
-            };
+            item.state = upload(ctx, decoded.id, decoded.result);
         }
     }
+}
 
+/// Uploads decoded frames to the GPU.
+fn upload(
+    ctx: &egui::Context,
+    key: u64,
+    result: Result<crate::loader::DecodedGif, String>,
+) -> GifState {
+    match result {
+        Ok(gif) => {
+            let mut textures = Vec::with_capacity(gif.frames.len());
+            let mut frame_ends = Vec::with_capacity(gif.frames.len());
+            let mut t = 0.0;
+            for (i, f) in gif.frames.into_iter().enumerate() {
+                t += f.delay;
+                frame_ends.push(t);
+                textures.push(ctx.load_texture(
+                    format!("gif-{key}-{i}"),
+                    f.image,
+                    TextureOptions::LINEAR,
+                ));
+            }
+            let censored = ctx.load_texture(
+                format!("gif-{key}-censored"),
+                gif.censored,
+                TextureOptions::LINEAR,
+            );
+            GifState::Ready(LoadedGif {
+                textures,
+                censored,
+                frame_ends,
+            })
+        }
+        Err(e) => GifState::Failed(e),
+    }
+}
+
+impl LocalGifApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
         let fav_count = self.library.entries.iter().filter(|e| e.favorite).count();
         ui.add_space(8.0);
@@ -890,6 +925,10 @@ impl LocalGifApp {
             } else if response.clicked() {
                 actions.push(Action::Copy(entry.id));
             }
+            // Scroll-wheel click (middle button): enlarged preview.
+            if response.middle_clicked() {
+                actions.push(Action::Preview(entry.id));
+            }
 
             let has_label = entry.label.is_some();
             let is_fav = entry.favorite;
@@ -898,6 +937,14 @@ impl LocalGifApp {
             response.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
                     actions.push(Action::Copy(entry.id));
+                    ui.close();
+                }
+                if ui
+                    .button("View larger")
+                    .on_hover_text("Or click the GIF with the scroll wheel")
+                    .clicked()
+                {
+                    actions.push(Action::Preview(entry.id));
                     ui.close();
                 }
                 let fav_text = if is_fav {
@@ -964,6 +1011,17 @@ impl LocalGifApp {
     fn apply(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::Copy(id) => self.copy_gif(ctx, id),
+            Action::Preview(id) => {
+                if let Some(e) = self.library.get(id) {
+                    self.loader.request_preview(id, e.path.clone());
+                    self.preview = Some(Preview {
+                        id,
+                        state: GifState::Loading,
+                        reveal: false,
+                        just_opened: true,
+                    });
+                }
+            }
             Action::ToggleSelect(id) => {
                 if !self.selected.remove(&id) {
                     self.selected.insert(id);
@@ -1489,7 +1547,8 @@ impl eframe::App for LocalGifApp {
 
         // Free memory: drop queued jobs for GIFs that scrolled away and
         // textures of GIFs that have been off-screen for a while.
-        self.loader.retain(|id| visible_ids.contains(&id));
+        self.loader
+            .retain(|id| visible_ids.contains(&id) || id & PREVIEW_BIT != 0);
         let now = ctx.input(|i| i.time);
         self.cache.retain(|id, item| {
             if visible_ids.contains(id) {
@@ -1511,6 +1570,7 @@ impl eframe::App for LocalGifApp {
         self.confirm_remove_modal(&ctx);
         self.conflict_modal(&ctx);
         self.bulk_modal(&ctx);
+        self.preview_modal(&ctx);
         self.cleanup_import_temp();
         self.toast(&ctx);
 

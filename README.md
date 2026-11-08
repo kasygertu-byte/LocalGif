@@ -39,6 +39,10 @@ open above the icon.
   - *Tags*: every tag and how many GIFs have it
   - *GIFs*: a searchable list of every GIF (including hidden NSFW ones) with checkboxes for
     the same bulk Rename / Tags / Delete actions
+- **Enlarged preview**: click a GIF with the **scroll wheel** (middle-click), or right-click →
+  *View larger*, to see it big at full resolution, e.g. to read small text. Copy from there, or
+  close it with Esc, a click outside, or another scroll-wheel click. NSFW/Warning GIFs stay
+  censored until you click *Show* (or hold Alt)
 - **Search bar** that filters by label, tags and file name, in every tab. Press **/** to jump to it
 - **Global shortcut** **Ctrl+Alt+G** opens/closes the picker from any app (see below)
 - **Add GIFs** with `+ Add` → *GIF files…* or *Folder…* (subfolders included), or drag files or
@@ -65,7 +69,7 @@ byte-for-byte, so nothing loses quality. Use counts and original-file locations 
 also move the file you originally added to the **Trash** (recoverable from there). LocalGif only
 knows where GIFs came from if they were added with this version or later.
 
-Right-click menu: Copy, Add/Remove favorite, Mark/Unmark as NSFW, Mark/Unmark as Warning, Edit label, Edit tags, Reset label, Remove from library.
+Right-click menu: Copy, View larger, Add/Remove favorite, Mark/Unmark as NSFW, Mark/Unmark as Warning, Edit label, Edit tags, Reset label, Remove from library.
 
 ## Global shortcut
 

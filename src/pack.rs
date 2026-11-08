@@ -210,8 +210,10 @@ mod tests {
             let mut zip = ZipWriter::new(File::create(&pack).unwrap());
             let o = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
             zip.start_file("pack.json", o).unwrap();
-            zip.write_all(br#"{"format":"localgif-pack","version":1,"gifs":[{"file":"../escape.gif"}]}"#)
-                .unwrap();
+            zip.write_all(
+                br#"{"format":"localgif-pack","version":1,"gifs":[{"file":"../escape.gif"}]}"#,
+            )
+            .unwrap();
             zip.start_file("gifs/../escape.gif", o).unwrap();
             zip.write_all(b"x").unwrap();
             zip.finish().unwrap();

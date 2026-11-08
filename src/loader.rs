@@ -15,6 +15,11 @@ use std::sync::{Arc, Condvar, Mutex};
 
 /// Largest width/height (in pixels) a decoded frame is scaled down to.
 const MAX_THUMB_SIZE: u32 = 320;
+/// Largest width/height for the enlarged preview (middle-click). GIFs smaller
+/// than this are decoded at their full resolution.
+const MAX_PREVIEW_SIZE: u32 = 800;
+/// Set on the id of preview jobs, so their results aren't mixed up with thumbnails.
+pub const PREVIEW_BIT: u64 = 1 << 63;
 
 pub struct Frame {
     pub image: egui::ColorImage,
@@ -37,6 +42,7 @@ pub struct Decoded {
 struct Job {
     id: u64,
     path: PathBuf,
+    max_size: u32,
 }
 
 struct Shared {
@@ -69,10 +75,21 @@ impl Loader {
         Self { shared, rx }
     }
 
+    /// Decodes a GIF as a grid thumbnail.
     pub fn request(&self, id: u64, path: PathBuf) {
+        self.push(id, path, MAX_THUMB_SIZE);
+    }
+
+    /// Decodes a GIF at (up to) full resolution for the enlarged preview.
+    /// The result arrives with `id | PREVIEW_BIT`.
+    pub fn request_preview(&self, id: u64, path: PathBuf) {
+        self.push(id | PREVIEW_BIT, path, MAX_PREVIEW_SIZE);
+    }
+
+    fn push(&self, id: u64, path: PathBuf, max_size: u32) {
         let mut q = self.shared.queue.lock().unwrap();
         if !q.iter().any(|j| j.id == id) {
-            q.push(Job { id, path });
+            q.push(Job { id, path, max_size });
             self.shared.cv.notify_one();
         }
     }
@@ -99,7 +116,7 @@ fn worker(shared: Arc<Shared>, tx: Sender<Decoded>, ctx: egui::Context) {
                 q = shared.cv.wait(q).unwrap();
             }
         };
-        let result = decode(&job.path);
+        let result = decode(&job.path, job.max_size);
         if tx.send(Decoded { id: job.id, result }).is_err() {
             return; // App closed.
         }
@@ -107,7 +124,7 @@ fn worker(shared: Arc<Shared>, tx: Sender<Decoded>, ctx: egui::Context) {
     }
 }
 
-fn decode(path: &Path) -> Result<DecodedGif, String> {
+fn decode(path: &Path, max_size: u32) -> Result<DecodedGif, String> {
     let err = |e: image::ImageError| e.to_string();
     let format = image::ImageReader::open(path)
         .and_then(|r| r.with_guessed_format())
@@ -152,8 +169,8 @@ fn decode(path: &Path) -> Result<DecodedGif, String> {
 
         let mut buf = frame.into_buffer();
         let (w, h) = buf.dimensions();
-        if w > MAX_THUMB_SIZE || h > MAX_THUMB_SIZE {
-            let scale = MAX_THUMB_SIZE as f32 / w.max(h) as f32;
+        if w > max_size || h > max_size {
+            let scale = max_size as f32 / w.max(h) as f32;
             let nw = ((w as f32 * scale).round() as u32).max(1);
             let nh = ((h as f32 * scale).round() as u32).max(1);
             buf = image::imageops::resize(&buf, nw, nh, image::imageops::FilterType::Triangle);
