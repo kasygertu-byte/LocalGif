@@ -2,6 +2,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod autostart;
 mod convert;
 mod events;
 mod hotkey;
@@ -45,6 +46,8 @@ fn main() -> eframe::Result {
     }
     // `--toggle` with nothing running just starts LocalGif normally (visible).
     let start_hidden = has("--hidden") && !has("--toggle");
+    // If "start when I log in" is on, make sure it starts this build.
+    autostart::keep_current();
 
     let (events, event_rx) = events::channel_pair();
     ipc::listen(events.clone(), build);

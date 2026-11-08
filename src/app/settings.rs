@@ -104,6 +104,31 @@ impl LocalGifApp {
                     .checkbox(&mut s.hover_to_play, "Play GIFs only while hovered")
                     .changed();
                 ui.end_row();
+
+                if crate::autostart::SUPPORTED {
+                    ui.label("Startup");
+                    let mut on = self.autostart_on;
+                    if ui
+                        .checkbox(&mut on, "Start LocalGif when I log in")
+                        .on_hover_text(
+                            "Starts in the tray (or minimized if there's no tray) when you log in",
+                        )
+                        .changed()
+                    {
+                        match crate::autostart::set_enabled(on) {
+                            Ok(()) => self.autostart_on = crate::autostart::is_enabled(),
+                            Err(e) => {
+                                let ctx = ui.ctx().clone();
+                                self.show_toast_for(
+                                    &ctx,
+                                    format!("Couldn't change startup setting: {e}"),
+                                    6.0,
+                                );
+                            }
+                        }
+                    }
+                    ui.end_row();
+                }
             });
 
         // Apply right away (the slider is live); write to disk when `save`.

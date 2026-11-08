@@ -35,7 +35,8 @@ open above the icon.
   (add tags to all, or remove tags from all) or **Delete…** them (optionally also moving the
   original files to the Trash, see below). Esc or **Done** ends selecting
 - **⚙ Settings** page:
-  - *General*: scroll speed (0.25×–4×), show/hide NSFW, don't censor NSFW, Warning delay, hover to play
+  - *General*: scroll speed (0.25×–4×), show/hide NSFW, don't censor NSFW, Warning delay, hover to play,
+    start when I log in
   - *Tags*: every tag and how many GIFs have it
   - *GIFs*: a searchable list of every GIF (including hidden NSFW ones) with checkboxes for
     the same bulk Rename / Tags / Delete actions
@@ -132,20 +133,14 @@ where the compositor puts it instead of next to the icon.
 
 ### Start automatically on login
 
-Link the binary into `~/.local/bin` (a link, not a copy, so autostart always runs your
-latest build) and add an autostart entry. Run this from the LocalGif folder:
+Settings → General → **Start LocalGif when I log in** (off by default). It starts LocalGif with
+`--hidden`: in the tray, or minimized where there's no tray (e.g. Windows).
 
-```bash
-mkdir -p ~/.local/bin ~/.config/autostart
-ln -sf "$PWD/target/release/localgif" ~/.local/bin/localgif
-cat > ~/.config/autostart/localgif.desktop <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=LocalGif
-Exec=sh -c '$HOME/.local/bin/localgif --hidden'
-X-GNOME-Autostart-enabled=true
-EOF
-```
+- Linux: creates `~/.config/autostart/localgif.desktop` (works on KDE, GNOME, XFCE, Cinnamon, …)
+- Windows: adds `LocalGif` to `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`
+
+Unticking removes it again. While it's on, each start of LocalGif points it at the build you
+just ran, so login always starts your latest build.
 
 ## Where things are stored
 

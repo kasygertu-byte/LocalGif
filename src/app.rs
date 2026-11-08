@@ -115,6 +115,8 @@ pub struct LocalGifApp {
     search: String,
     page: Page,
     settings_tab: SettingsTab,
+    /// Whether "Start when I log in" is on (read from the system at startup).
+    autostart_on: bool,
     /// Search box on the settings "GIFs" list.
     settings_search: String,
     /// Bulk selection (GIF ids).
@@ -185,7 +187,8 @@ struct WidgetState {
     /// When the window last lost focus.
     unfocused_at: Option<Instant>,
     quitting: bool,
-    /// Hide the window on the first frame (started with `--hidden`).
+    /// Hide the window on the first frame (started with `--hidden`, e.g. at login):
+    /// to the tray, or minimized when there's no tray (e.g. Windows).
     start_hidden: bool,
 }
 
@@ -209,7 +212,7 @@ impl LocalGifApp {
 
         let widget = WidgetState {
             visible: true,
-            start_hidden: start_hidden && bg.tray.is_some(),
+            start_hidden,
             ..Default::default()
         };
         let mut app = Self {
@@ -221,6 +224,7 @@ impl LocalGifApp {
             search: String::new(),
             page: Page::Grid,
             settings_tab: SettingsTab::General,
+            autostart_on: crate::autostart::is_enabled(),
             settings_search: String::new(),
             selected: HashSet::new(),
             select_mode: false,
@@ -1588,16 +1592,15 @@ impl eframe::App for LocalGifApp {
             esc_used = true;
         }
 
-        if self.bg.tray.is_some() {
-            if std::mem::take(&mut self.widget.start_hidden) {
-                self.hide_window(&ctx);
-            }
-            if no_dialog
-                && !esc_used
-                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-            {
-                self.hide_window(&ctx);
-            }
+        if std::mem::take(&mut self.widget.start_hidden) {
+            self.hide_window(&ctx);
+        }
+        if self.bg.tray.is_some()
+            && no_dialog
+            && !esc_used
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.hide_window(&ctx);
         }
     }
 }
