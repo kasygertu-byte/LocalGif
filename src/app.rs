@@ -189,7 +189,7 @@ impl LocalGifApp {
             start_hidden: start_hidden && bg.tray.is_some(),
             ..Default::default()
         };
-        Self {
+        let mut app = Self {
             library,
             loader: Loader::new(cc.egui_ctx.clone()),
             cache: HashMap::new(),
@@ -215,7 +215,11 @@ impl LocalGifApp {
             _hotkey: hotkey,
             widget,
             had_focus: true,
+        };
+        if let Some(warning) = app.library.load_warning.take() {
+            app.show_toast_for(&cc.egui_ctx, warning, 20.0);
         }
+        app
     }
 
     /// Shows the widget window, placed next to the tray icon if its position is known.
@@ -515,7 +519,7 @@ impl LocalGifApp {
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut settings = self.library.settings;
+                let mut settings = self.library.settings.clone();
                 let a = ui
                     .checkbox(&mut settings.hover_to_play, "Hover to play")
                     .on_hover_text("GIFs stay still until you hover over them");
@@ -1204,8 +1208,20 @@ impl LocalGifApp {
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    // Explicit line breaks only; don't wrap to the area's initial width.
-                    ui.add(egui::Label::new(&toast.text).wrap_mode(egui::TextWrapMode::Extend));
+                    // Short messages stay on one line; long ones wrap to the window width.
+                    let max_width = ctx.content_rect().width() - 48.0;
+                    let galley = egui::WidgetText::from(toast.text.as_str()).into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Extend),
+                        f32::INFINITY,
+                        egui::TextStyle::Body,
+                    );
+                    if galley.size().x > max_width {
+                        ui.set_max_width(max_width);
+                        ui.add(egui::Label::new(&toast.text).wrap());
+                    } else {
+                        ui.add(egui::Label::new(&toast.text).extend());
+                    }
                 });
             });
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(toast.until - now));

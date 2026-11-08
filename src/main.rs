@@ -28,6 +28,8 @@ fn main() -> eframe::Result {
     //   --toggle  show the picker, or hide it if it's in front (bind this to a key)
     //   --hidden  nothing (it's already running in the tray)
     //   (none)    show the picker
+    // If the running one is a different build (you updated), it quits and this
+    // build takes over instead, so an old copy can't keep running with old data.
     let command = if has("--toggle") {
         "toggle"
     } else if has("--hidden") {
@@ -35,14 +37,15 @@ fn main() -> eframe::Result {
     } else {
         "show"
     };
-    if ipc::send_to_running(command) {
+    let build = ipc::build_id();
+    if let ipc::Outcome::Handled = ipc::send_to_running(command, &build) {
         return Ok(());
     }
     // `--toggle` with nothing running just starts LocalGif normally (visible).
     let start_hidden = has("--hidden") && !has("--toggle");
 
     let (events, event_rx) = events::channel_pair();
-    ipc::listen(events.clone());
+    ipc::listen(events.clone(), build);
 
     let icon = image::load_from_memory(include_bytes!("../assets/icon.png"))
         .expect("bundled icon is a valid PNG")

@@ -4,6 +4,7 @@
 //! usage counts) is stored next to the config as `library.json`.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,10 @@ struct EntryMeta {
     /// Unix timestamp (seconds) of the last copy.
     #[serde(default, skip_serializing_if = "is_zero")]
     last_used: u64,
+    /// Fields this build doesn't know (written by a newer LocalGif). Kept as-is so
+    /// running an older build never deletes data a newer one saved.
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
 
 fn is_zero<T: Default + PartialEq>(v: &T) -> bool {
@@ -43,7 +48,7 @@ fn default_hotkey() -> String {
 }
 
 /// View options, saved between sessions.
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Settings {
     /// Show GIFs marked NSFW (censored). When false they're hidden completely.
@@ -52,6 +57,9 @@ pub struct Settings {
     pub hover_to_play: bool,
     /// Mouse-wheel scroll speed multiplier (1.0 = normal).
     pub scroll_speed: f32,
+    /// Settings from a newer LocalGif, kept as-is.
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
 
 impl Default for Settings {
@@ -60,6 +68,7 @@ impl Default for Settings {
             show_nsfw: true,
             hover_to_play: false,
             scroll_speed: 1.0,
+            extra: Map::new(),
         }
     }
 }
@@ -74,6 +83,9 @@ struct LibraryFile {
     settings: Settings,
     #[serde(default)]
     gifs: HashMap<String, EntryMeta>,
+    /// Top-level fields from a newer LocalGif, kept as-is.
+    #[serde(flatten)]
+    extra: Map<String, Value>,
 }
 
 pub struct GifEntry {
@@ -93,6 +105,8 @@ pub struct GifEntry {
     pub added: u64,
     pub uses: u32,
     pub last_used: u64,
+    /// Unknown fields from `library.json`, written back unchanged.
+    extra: Map<String, Value>,
     /// Pixel size `[width, height]`, read from the GIF header.
     pub size: [u32; 2],
 }
@@ -139,6 +153,10 @@ pub struct Library {
     pub gif_dir: PathBuf,
     pub hotkey: String,
     pub settings: Settings,
+    /// Unknown top-level fields from `library.json`, written back unchanged.
+    extra: Map<String, Value>,
+    /// Set when `library.json` couldn't be read; shown to the user once.
+    pub load_warning: Option<String>,
     pub entries: Vec<GifEntry>,
     /// Files in the library folder that could not be loaded, as "name: reason".
     pub skipped: Vec<String>,
@@ -152,12 +170,32 @@ impl Library {
             .join("LocalGif");
         let config_path = config_dir.join("library.json");
 
-        let file: Option<LibraryFile> = fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok());
+        let mut load_warning = None;
+        let file: Option<LibraryFile> = match fs::read_to_string(&config_path) {
+            Err(_) => None, // First run.
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(file) => {
+                    // Keep a copy of the last good library from before this run.
+                    let _ = fs::write(config_path.with_extension("json.bak"), &text);
+                    Some(file)
+                }
+                Err(e) => {
+                    // Never overwrite a library we can't read: set it aside instead.
+                    let aside = config_dir.join(format!("library.broken-{}.json", now_secs()));
+                    let _ = fs::rename(&config_path, &aside);
+                    load_warning = Some(format!(
+                        "Your library.json couldn't be read ({e}). It was saved as {} and \
+                         LocalGif started with an empty library.",
+                        aside.display()
+                    ));
+                    eprintln!("LocalGif: {}", load_warning.as_ref().unwrap());
+                    None
+                }
+            },
+        };
 
-        let (gif_dir, hotkey, settings, meta) = match file {
-            Some(f) => (f.gif_dir, f.hotkey, f.settings, f.gifs),
+        let (gif_dir, hotkey, settings, meta, extra) = match file {
+            Some(f) => (f.gif_dir, f.hotkey, f.settings, f.gifs, f.extra),
             None => (
                 dirs::data_dir()
                     .unwrap_or_else(|| PathBuf::from("."))
@@ -166,6 +204,7 @@ impl Library {
                 default_hotkey(),
                 Settings::default(),
                 HashMap::new(),
+                Map::new(),
             ),
         };
         let _ = fs::create_dir_all(&gif_dir);
@@ -175,12 +214,16 @@ impl Library {
             gif_dir,
             hotkey,
             settings,
+            extra,
+            load_warning,
             entries: Vec::new(),
             skipped: Vec::new(),
             next_id: 0,
         };
-        lib.scan(&meta);
-        lib.save();
+        // Only write when the folder differs from what's saved (new or deleted files).
+        if lib.scan(&meta) || !lib.config_path.exists() {
+            lib.save();
+        }
         lib
     }
 
@@ -243,12 +286,18 @@ impl Library {
                 added: m.added,
                 uses: m.uses,
                 last_used: m.last_used,
+                extra: m.extra,
                 size,
             });
-            changed = true;
+            // A file that wasn't in the saved library yet.
+            changed |= !meta.contains_key(&self.entries.last().unwrap().file_name);
         }
         // Whatever is left in `known` was deleted from the folder.
         changed |= !known.is_empty();
+        // Saved GIFs whose file is gone.
+        changed |= meta
+            .keys()
+            .any(|name| !self.entries.iter().any(|e| &e.file_name == name));
         self.skipped.sort();
         self.sort();
         changed
@@ -308,6 +357,7 @@ impl Library {
                 added: now_secs(),
                 uses: 0,
                 last_used: 0,
+                extra: Map::new(),
                 size,
             });
             result.added += 1;
@@ -506,8 +556,9 @@ impl Library {
         let file = LibraryFile {
             gif_dir: self.gif_dir.clone(),
             hotkey: self.hotkey.clone(),
-            settings: self.settings,
+            settings: self.settings.clone(),
             gifs: self.meta_map(),
+            extra: self.extra.clone(),
         };
         let Ok(json) = serde_json::to_string_pretty(&file) else {
             return;
@@ -537,6 +588,7 @@ impl Library {
                         added: e.added,
                         uses: e.uses,
                         last_used: e.last_used,
+                        extra: e.extra.clone(),
                     },
                 )
             })

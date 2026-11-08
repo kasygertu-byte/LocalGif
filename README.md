@@ -63,7 +63,8 @@ localgif --toggle
 (KDE: *System Settings → Shortcuts → Add Command*; GNOME: *Settings → Keyboard → Custom Shortcuts*.)
 `--toggle` also works on X11 if you prefer your desktop's shortcut settings.
 
-Only one LocalGif runs at a time: launching it again brings up the running one.
+Only one LocalGif runs at a time: launching it again brings up the running one. If the running
+one is a **different build** (you rebuilt or updated), it quits and the new build takes over.
 
 ## Build & run
 
@@ -107,11 +108,12 @@ where the compositor puts it instead of next to the icon.
 
 ### Start automatically on login
 
-Copy the binary somewhere permanent and add an autostart entry:
+Link the binary into `~/.local/bin` (a link, not a copy, so autostart always runs your
+latest build) and add an autostart entry. Run this from the LocalGif folder:
 
 ```bash
 mkdir -p ~/.local/bin ~/.config/autostart
-cp target/release/localgif ~/.local/bin/
+ln -sf "$PWD/target/release/localgif" ~/.local/bin/localgif
 cat > ~/.config/autostart/localgif.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
@@ -131,6 +133,10 @@ EOF
 Added GIFs are **copied** into the library folder, so moving or deleting the original file
 doesn't break anything. You can also put GIF files into that folder directly; they show up the
 next time the LocalGif window gets focus. To use a different folder, edit `gif_dir` in `library.json`.
+
+`library.json` is backed up to `library.json.bak` each time LocalGif starts. If it ever can't be
+read, it's set aside as `library.broken-<time>.json` (never overwritten) and the app tells you.
+Settings and fields from newer LocalGif versions are kept when an older version saves.
 
 Files that can't be shown (for example an MP4 video saved with a `.gif` name) are listed under
 the search bar. Hover the warning to see why.

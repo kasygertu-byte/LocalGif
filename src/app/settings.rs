@@ -45,7 +45,7 @@ impl LocalGifApp {
     }
 
     fn settings_general(&mut self, ui: &mut egui::Ui) {
-        let mut s = self.library.settings;
+        let mut s = self.library.settings.clone();
         let mut save = false;
 
         egui::Grid::new("settings_general")
@@ -83,7 +83,7 @@ impl LocalGifApp {
             });
 
         // Apply right away (the slider is live); write to disk when `save`.
-        self.library.settings = s;
+        self.library.settings = s.clone();
         if save {
             self.library.set_settings(s);
         }
