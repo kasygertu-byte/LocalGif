@@ -43,7 +43,7 @@ When your desktop has a system tray, LocalGif puts a **GIF** icon in it:
 | Action | Result |
 |---|---|
 | Left-click the tray icon | Opens the picker above (or below) the icon; click again to close it |
-| Click anywhere outside the picker, or press Esc | Hides it |
+| Press Esc | Hides it |
 | Window close button | Hides it to the tray (keeps running) |
 | Right-click the tray icon | Menu with *Open LocalGif* and *Quit* |
 

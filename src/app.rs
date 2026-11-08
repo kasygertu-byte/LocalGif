@@ -7,7 +7,6 @@ use eframe::egui::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 const ACCENT: Color32 = Color32::from_rgb(88, 101, 242);
 const STAR_YELLOW: Color32 = Color32::from_rgb(250, 199, 50);
@@ -96,13 +95,8 @@ pub struct LocalGifApp {
 struct WidgetState {
     visible: bool,
     quitting: bool,
-    was_focused: bool,
     /// Hide the window on the first frame (started with `--hidden`).
     start_hidden: bool,
-    /// When the window was last hidden because it lost focus.
-    auto_hidden_at: Option<Instant>,
-    /// Don't hide on focus loss before this time (e.g. right after a file dialog).
-    keep_open_until: Option<Instant>,
 }
 
 impl LocalGifApp {
@@ -157,13 +151,11 @@ impl LocalGifApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         self.widget.visible = true;
-        self.widget.was_focused = false;
     }
 
     fn hide_window(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         self.widget.visible = false;
-        self.widget.was_focused = false;
     }
 
     fn show_toast(&mut self, ctx: &egui::Context, text: impl Into<String>) {
@@ -269,13 +261,10 @@ impl LocalGifApp {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ Add GIFs").clicked() {
-                    // The dialog takes focus; don't let that hide the widget.
-                    self.widget.keep_open_until = Some(Instant::now() + Duration::from_secs(2));
                     let picked = rfd::FileDialog::new()
                         .set_title("Add GIFs")
                         .add_filter("GIF", &["gif", "GIF"])
                         .pick_files();
-                    self.widget.keep_open_until = Some(Instant::now() + Duration::from_secs(1));
                     if let Some(paths) = picked {
                         let ctx = ui.ctx().clone();
                         self.add_files(&ctx, paths);
@@ -662,15 +651,9 @@ impl eframe::App for LocalGifApp {
         for event in events {
             match event {
                 TrayEvent::Toggle { x, y } => {
-                    // Clicking the tray icon takes focus from the window, which already
-                    // hid it. Don't immediately show it again in that case.
-                    let just_auto_hidden = self
-                        .widget
-                        .auto_hidden_at
-                        .is_some_and(|t| t.elapsed() < Duration::from_millis(400));
                     if self.widget.visible {
                         self.hide_window(ctx);
-                    } else if !just_auto_hidden {
+                    } else {
                         self.show_window(ctx, Some((x, y)));
                     }
                 }
@@ -686,21 +669,6 @@ impl eframe::App for LocalGifApp {
         if ctx.input(|i| i.viewport().close_requested()) && !self.widget.quitting {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide_window(ctx);
-        }
-
-        // Like a popup: hide when the user clicks somewhere else.
-        let focused = ctx.input(|i| i.viewport().focused);
-        if self.widget.visible {
-            let keep_open = self
-                .widget
-                .keep_open_until
-                .is_some_and(|t| Instant::now() < t);
-            if self.widget.was_focused && focused == Some(false) && !keep_open {
-                self.hide_window(ctx);
-                self.widget.auto_hidden_at = Some(Instant::now());
-            } else {
-                self.widget.was_focused = focused == Some(true);
-            }
         }
     }
 
