@@ -14,13 +14,40 @@ open above the icon.
   Right-click a GIF → *Edit label…* to change it
 - **Favorites**: hover a GIF and click the star in its top-right corner;
   favorited GIFs appear in the *Favorites* tab
+- **Tags**: right-click a GIF → *Edit tags…* to give it any number of tags (Enter or commas
+  to add, click a tag to remove it, click a suggestion to reuse one). Tags show on the tile and
+  are searchable
+- **Most used** tab: GIFs you've copied, most copied first
 - **NSFW tag**: right-click a GIF → *Mark as NSFW* to show it blurred with an NSFW label.
   It still copies normally when clicked; *Unmark as NSFW* restores it
-- **Search bar** that filters by label (and file name), in both *All GIFs* and *Favorites*
-- **Add GIFs** with the `+ Add GIFs` button, or drag GIF files **or whole folders** onto the window
+- **Search bar** that filters by label, tags and file name, in every tab. Press **/** to jump to it
+- **Global shortcut** **Ctrl+Alt+G** opens/closes the picker from any app (see below)
+- **Add GIFs** with `+ Add` → *GIF files…* or *Folder…* (subfolders included), or drag files or
+  folders onto the window
+- **Duplicates**: adding a GIF that's already in the library (same content or same file name)
+  asks whether to **Replace** it or **Keep existing**. Replacing keeps its label, tags, favorite
+  and use count
 - Reads **animated WebP** too (Discord often saves "GIFs" as WebP, sometimes still named `.gif`)
 
-Right-click menu: Copy, Add/Remove favorite, Mark/Unmark as NSFW, Edit label, Reset label, Remove from library.
+Right-click menu: Copy, Add/Remove favorite, Mark/Unmark as NSFW, Edit label, Edit tags, Reset label, Remove from library.
+
+## Global shortcut
+
+**Ctrl+Alt+G** shows the picker, or hides it if it's already in front. Change it with the
+`hotkey` setting in `library.json` (e.g. `"Ctrl+Shift+Space"`, `"Super+G"`; `""` turns it off),
+then restart LocalGif.
+
+This works on **Windows** and **Linux X11**. **Wayland** doesn't allow apps to grab keys, so
+there, add a custom shortcut in your desktop's keyboard settings that runs:
+
+```bash
+localgif --toggle
+```
+
+(KDE: *System Settings → Shortcuts → Add Command*; GNOME: *Settings → Keyboard → Custom Shortcuts*.)
+`--toggle` also works on X11 if you prefer your desktop's shortcut settings.
+
+Only one LocalGif runs at a time: launching it again brings up the running one.
 
 ## Build & run
 
@@ -83,7 +110,7 @@ EOF
 | What | Windows | Linux | macOS |
 |---|---|---|---|
 | GIF files (copied here when added) | `%APPDATA%\LocalGif\gifs` | `~/.local/share/LocalGif/gifs` | `~/Library/Application Support/LocalGif/gifs` |
-| Labels, favorites & NSFW tags (`library.json`) | `%APPDATA%\LocalGif` | `~/.config/LocalGif` | `~/Library/Application Support/LocalGif` |
+| Labels, tags, favorites, NSFW, use counts, shortcut (`library.json`) | `%APPDATA%\LocalGif` | `~/.config/LocalGif` | `~/Library/Application Support/LocalGif` |
 
 Added GIFs are **copied** into the library folder, so moving or deleting the original file
 doesn't break anything. You can also put GIF files into that folder directly; they show up the

@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.18"
 dirs = "6"
+global-hotkey = "0.9"
 
 # System tray icon (StatusNotifierItem) for the taskbar widget mode.
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -1,12 +1,15 @@
-use crate::library::{GifEntry, Library};
+use crate::events::{AppEvent, EventSender};
+use crate::library::{Conflict, ConflictKind, GifEntry, Library};
 use crate::loader::Loader;
-use crate::tray::{TrayEvent, TrayLink};
+use crate::tray::TrayHandle;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Pos2, Rect, Sense, Stroke,
     StrokeKind, TextureHandle, TextureOptions, Vec2, pos2, text::LayoutJob, vec2,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
 
 const ACCENT: Color32 = Color32::from_rgb(88, 101, 242);
 const STAR_YELLOW: Color32 = Color32::from_rgb(250, 199, 50);
@@ -21,6 +24,7 @@ const EVICT_AFTER: f64 = 10.0;
 enum View {
     All,
     Favorites,
+    MostUsed,
 }
 
 struct LoadedGif {
@@ -72,6 +76,7 @@ enum Action {
     ToggleFavorite(u64),
     ToggleNsfw(u64),
     EditLabel(u64),
+    EditTags(u64),
     ResetLabel(u64),
     AskRemove(u64),
 }
@@ -87,38 +92,69 @@ pub struct LocalGifApp {
     /// GIF id + label text being edited.
     editing: Option<(u64, String)>,
     confirm_remove: Option<u64>,
-    /// Taskbar widget mode: `Some` when the system tray icon is running.
-    tray: Option<TrayLink>,
+    tag_edit: Option<TagEdit>,
+    /// GIFs the user tried to add that are already in the library, waiting for
+    /// "Replace or skip?".
+    conflicts: VecDeque<Conflict>,
+    conflict_apply_all: bool,
+    bg: Background,
+    /// Keeps the global shortcut registered.
+    _hotkey: Option<global_hotkey::GlobalHotKeyManager>,
     widget: WidgetState,
     had_focus: bool,
+}
+
+/// Things running outside the UI that send events to it.
+pub struct Background {
+    pub events: EventSender,
+    pub event_rx: Receiver<AppEvent>,
+    /// Taskbar widget mode: `Some` when the system tray icon is running.
+    pub tray: Option<TrayHandle>,
+}
+
+struct TagEdit {
+    id: u64,
+    tags: Vec<String>,
+    input: String,
 }
 
 /// Window state used in taskbar widget mode.
 #[derive(Default)]
 struct WidgetState {
     visible: bool,
+    focused: bool,
+    /// When the window last lost focus.
+    unfocused_at: Option<Instant>,
     quitting: bool,
     /// Hide the window on the first frame (started with `--hidden`).
     start_hidden: bool,
 }
 
 impl LocalGifApp {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        tray: Option<TrayLink>,
-        start_hidden: bool,
-    ) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, bg: Background, start_hidden: bool) -> Self {
         setup_style(&cc.egui_ctx);
-        if let Some(tray) = &tray {
-            let _ = tray.ctx.set(cc.egui_ctx.clone());
-        }
+        bg.events.set_context(cc.egui_ctx.clone());
+        let library = Library::load();
+
+        let hotkey = if library.hotkey.trim().is_empty() {
+            None
+        } else {
+            match crate::hotkey::register(&library.hotkey, bg.events.clone()) {
+                Ok(manager) => Some(manager),
+                Err(e) => {
+                    eprintln!("LocalGif: global shortcut disabled: {e}");
+                    None
+                }
+            }
+        };
+
         let widget = WidgetState {
             visible: true,
-            start_hidden: start_hidden && tray.is_some(),
+            start_hidden: start_hidden && bg.tray.is_some(),
             ..Default::default()
         };
         Self {
-            library: Library::load(),
+            library,
             loader: Loader::new(cc.egui_ctx.clone()),
             cache: HashMap::new(),
             clipboard: None,
@@ -127,7 +163,11 @@ impl LocalGifApp {
             toast: None,
             editing: None,
             confirm_remove: None,
-            tray,
+            tag_edit: None,
+            conflicts: VecDeque::new(),
+            conflict_apply_all: false,
+            bg,
+            _hotkey: hotkey,
             widget,
             had_focus: true,
         }
@@ -152,13 +192,27 @@ impl LocalGifApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         self.widget.visible = true;
     }
 
+    /// Hides to the tray, or minimizes when there is no tray to bring it back from.
     fn hide_window(&mut self, ctx: &egui::Context) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        if self.bg.tray.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         self.widget.visible = false;
+        self.widget.focused = false;
+    }
+
+    fn any_dialog_open(&self) -> bool {
+        self.editing.is_some()
+            || self.confirm_remove.is_some()
+            || self.tag_edit.is_some()
+            || !self.conflicts.is_empty()
     }
 
     fn show_toast(&mut self, ctx: &egui::Context, text: impl Into<String>) {
@@ -193,7 +247,10 @@ impl LocalGifApp {
         }
         let result = self.clipboard.as_mut().unwrap().set().file_list(&[path]);
         match result {
-            Ok(()) => self.show_toast(ctx, format!("Copied \"{name}\" - paste it with Ctrl+V")),
+            Ok(()) => {
+                self.library.record_use(id);
+                self.show_toast(ctx, format!("Copied \"{name}\" - paste it with Ctrl+V"));
+            }
             Err(e) => self.show_toast(ctx, format!("Copy failed: {e}")),
         }
     }
@@ -202,14 +259,23 @@ impl LocalGifApp {
         if paths.is_empty() {
             return;
         }
-        let (added, errors) = self.library.add_files(&paths);
-        let mut msg = match added {
-            0 => "No GIFs added".to_string(),
+        let result = self.library.add_files(&paths);
+        let errors = result.errors;
+        // Already-added GIFs: ask "Replace or skip?" one by one.
+        if self.conflicts.is_empty() {
+            self.conflict_apply_all = false;
+        }
+        self.conflicts.extend(result.conflicts);
+
+        let mut msg = match result.added {
+            0 => "No new GIFs added".to_string(),
             1 => "Added 1 GIF".to_string(),
             n => format!("Added {n} GIFs"),
         };
         if errors.is_empty() {
-            self.show_toast(ctx, msg);
+            if result.added > 0 || self.conflicts.is_empty() {
+                self.show_toast(ctx, msg);
+            }
         } else {
             msg += &format!(", {} skipped:", errors.len());
             for e in errors.iter().take(5) {
@@ -268,24 +334,37 @@ impl LocalGifApp {
                 View::Favorites,
                 format!("Favorites ({fav_count})"),
             );
+            ui.selectable_value(&mut self.view, View::MostUsed, "Most used");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("+ Add GIFs").clicked() {
-                    let picked = rfd::FileDialog::new()
-                        .set_title("Add GIFs")
-                        .add_filter("GIF", &["gif", "GIF"])
-                        .pick_files();
-                    if let Some(paths) = picked {
-                        let ctx = ui.ctx().clone();
-                        self.add_files(&ctx, paths);
+                let mut picked = None;
+                ui.menu_button("+ Add", |ui| {
+                    if ui.button("GIF files…").clicked() {
+                        ui.close();
+                        picked = rfd::FileDialog::new()
+                            .set_title("Add GIFs")
+                            .add_filter("GIF / WebP", &["gif", "GIF", "webp", "WEBP"])
+                            .pick_files();
                     }
+                    if ui.button("Folder…").clicked() {
+                        ui.close();
+                        picked = rfd::FileDialog::new()
+                            .set_title("Add a folder of GIFs")
+                            .pick_folder()
+                            .map(|dir| vec![dir]);
+                    }
+                });
+                if let Some(paths) = picked {
+                    let ctx = ui.ctx().clone();
+                    self.add_files(&ctx, paths);
                 }
             });
         });
         ui.add_space(6.0);
 
         let hint = match self.view {
-            View::All => "Search All GIFs",
-            View::Favorites => "Search Favorites",
+            View::All => "Search All GIFs   ( / )",
+            View::Favorites => "Search Favorites   ( / )",
+            View::MostUsed => "Search Most Used   ( / )",
         };
         egui::Frame::new()
             .fill(TILE_BG)
@@ -296,6 +375,7 @@ impl LocalGifApp {
                     ui.label(egui::RichText::new("🔍").color(Color32::GRAY));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
+                            .id(search_id())
                             .hint_text(hint)
                             .frame(egui::Frame::NONE)
                             .desired_width(f32::INFINITY),
@@ -330,25 +410,39 @@ impl LocalGifApp {
         let now = ui.input(|i| i.time);
         let query = self.search.trim().to_lowercase();
 
-        let shown: Vec<&GifEntry> = self
+        let mut shown: Vec<&GifEntry> = self
             .library
             .entries
             .iter()
-            .filter(|e| self.view == View::All || e.favorite)
+            .filter(|e| match self.view {
+                View::All => true,
+                View::Favorites => e.favorite,
+                View::MostUsed => e.uses > 0,
+            })
             .filter(|e| {
                 query.is_empty()
                     || e.display_name().to_lowercase().contains(&query)
                     || e.file_name.to_lowercase().contains(&query)
+                    || e.tags.iter().any(|t| t.to_lowercase().contains(&query))
             })
             .collect();
+        if self.view == View::MostUsed {
+            shown.sort_by(|a, b| {
+                b.uses
+                    .cmp(&a.uses)
+                    .then_with(|| b.last_used.cmp(&a.last_used))
+            });
+        }
 
         if shown.is_empty() {
             let msg = if !query.is_empty() {
                 "No GIFs match your search."
             } else if self.view == View::Favorites {
                 "No favorites yet.\nHover over a GIF and click the star to add it here."
+            } else if self.view == View::MostUsed {
+                "Nothing here yet.\nGIFs you copy show up here, most used first."
             } else {
-                "No GIFs yet.\nClick \"+ Add GIFs\" or drag GIF files onto this window."
+                "No GIFs yet.\nClick \"+ Add\" or drag GIF files or folders onto this window."
             };
             ui.add_space(40.0);
             ui.vertical_centered(|ui| ui.label(egui::RichText::new(msg).color(Color32::GRAY)));
@@ -453,7 +547,7 @@ impl LocalGifApp {
             if entry.nsfw {
                 draw_nsfw_badge(&painter, rect);
             }
-            draw_label(&painter, rect, entry.display_name());
+            draw_label(&painter, rect, entry.display_name(), &entry.tags);
 
             if hovered {
                 painter.rect_stroke(
@@ -528,6 +622,10 @@ impl LocalGifApp {
                     actions.push(Action::EditLabel(entry.id));
                     ui.close();
                 }
+                if ui.button("Edit tags…").clicked() {
+                    actions.push(Action::EditTags(entry.id));
+                    ui.close();
+                }
                 if has_label && ui.button("Reset label to file name").clicked() {
                     actions.push(Action::ResetLabel(entry.id));
                     ui.close();
@@ -555,6 +653,15 @@ impl LocalGifApp {
             Action::EditLabel(id) => {
                 if let Some(e) = self.library.get(id) {
                     self.editing = Some((id, e.display_name().to_string()));
+                }
+            }
+            Action::EditTags(id) => {
+                if let Some(e) = self.library.get(id) {
+                    self.tag_edit = Some(TagEdit {
+                        id,
+                        tags: e.tags.clone(),
+                        input: String::new(),
+                    });
                 }
             }
             Action::ResetLabel(id) => self.library.set_label(id, ""),
@@ -650,6 +757,202 @@ impl LocalGifApp {
         }
     }
 
+    fn edit_tags_modal(&mut self, ctx: &egui::Context) {
+        let Some(edit) = &mut self.tag_edit else {
+            return;
+        };
+        let name = self
+            .library
+            .get(edit.id)
+            .map(|e| e.display_name().to_string())
+            .unwrap_or_default();
+        let all_tags = self.library.all_tags();
+        let mut save = false;
+        let mut cancel = false;
+
+        let modal = egui::Modal::new(Id::unique("edit_tags")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.heading(format!("Tags for \"{name}\""));
+            ui.add_space(6.0);
+
+            // Current tags; click one to remove it.
+            if edit.tags.is_empty() {
+                ui.label(egui::RichText::new("No tags yet.").color(Color32::GRAY));
+            } else {
+                let mut remove = None;
+                ui.horizontal_wrapped(|ui| {
+                    for (i, tag) in edit.tags.iter().enumerate() {
+                        if ui
+                            .button(format!("{tag}  ✕"))
+                            .on_hover_text("Remove tag")
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                    }
+                });
+                if let Some(i) = remove {
+                    edit.tags.remove(i);
+                }
+            }
+            ui.add_space(6.0);
+
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut edit.input)
+                    .hint_text("Add tags (Enter to add, comma for several)")
+                    .desired_width(f32::INFINITY),
+            );
+            if !resp.has_focus() && !resp.lost_focus() {
+                resp.request_focus();
+            }
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if edit.input.trim().is_empty() {
+                    save = true; // Enter on an empty field saves.
+                } else {
+                    add_tags(&mut edit.tags, &edit.input);
+                    edit.input.clear();
+                }
+                resp.request_focus();
+            }
+
+            // Existing tags from other GIFs, filtered by what's typed.
+            let typed = edit.input.trim().to_lowercase();
+            let suggestions: Vec<&String> = all_tags
+                .iter()
+                .filter(|t| !edit.tags.iter().any(|x| x.eq_ignore_ascii_case(t)))
+                .filter(|t| typed.is_empty() || t.to_lowercase().contains(&typed))
+                .take(20)
+                .collect();
+            if !suggestions.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Your tags (click to add):")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                let mut picked = None;
+                ui.horizontal_wrapped(|ui| {
+                    for tag in suggestions {
+                        if ui.small_button(tag.as_str()).clicked() {
+                            picked = Some(tag.clone());
+                        }
+                    }
+                });
+                if let Some(tag) = picked {
+                    edit.tags.push(tag);
+                    edit.input.clear();
+                }
+            }
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+            });
+        });
+
+        if save {
+            let mut tags = edit.tags.clone();
+            add_tags(&mut tags, &edit.input); // Don't lose text that wasn't added with Enter.
+            let id = edit.id;
+            self.library.set_tags(id, &tags);
+            self.tag_edit = None;
+        } else if cancel || modal.should_close() {
+            self.tag_edit = None;
+        }
+    }
+
+    /// "Already in your library: replace or skip?" for each conflicting file.
+    fn conflict_modal(&mut self, ctx: &egui::Context) {
+        let Some(conflict) = self.conflicts.front() else {
+            return;
+        };
+        let Some(existing_name) = self
+            .library
+            .get(conflict.existing)
+            .map(|e| e.display_name().to_string())
+        else {
+            self.conflicts.pop_front(); // Removed in the meantime.
+            return;
+        };
+        let new_name = conflict
+            .src
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let remaining = self.conflicts.len() - 1;
+        let why = match conflict.kind {
+            ConflictKind::Content => "is identical to",
+            ConflictKind::Name => "has the same file name as",
+            ConflictKind::File => "is the library copy of",
+        };
+
+        let mut choice: Option<bool> = None; // Some(true) = replace, Some(false) = skip.
+        let apply_all = &mut self.conflict_apply_all;
+        egui::Modal::new(Id::unique("conflict")).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.heading("Already in your library");
+            ui.add_space(6.0);
+            ui.label(format!("\"{new_name}\" {why} \"{existing_name}\"."));
+            ui.label(
+                egui::RichText::new(
+                    "Replacing updates the GIF file and keeps its label, tags and favorite.",
+                )
+                .small()
+                .color(Color32::GRAY),
+            );
+            if remaining > 0 {
+                ui.add_space(4.0);
+                ui.checkbox(apply_all, format!("Do the same for the other {remaining}"));
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Replace").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Keep existing").clicked() {
+                    choice = Some(false);
+                }
+            });
+        });
+        // Escape / clicking outside counts as "Keep existing" for this one.
+        if choice.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            choice = Some(false);
+        }
+        let Some(replace) = choice else {
+            return;
+        };
+
+        let batch: Vec<Conflict> = if self.conflict_apply_all {
+            self.conflicts.drain(..).collect()
+        } else {
+            self.conflicts.pop_front().into_iter().collect()
+        };
+        if !replace {
+            return;
+        }
+        let mut replaced = 0;
+        let mut failed = Vec::new();
+        for c in batch {
+            match self.library.replace(c.existing, &c.src) {
+                Ok(()) => {
+                    self.cache.remove(&c.existing); // Reload the new version.
+                    replaced += 1;
+                }
+                Err(e) => failed.push(e),
+            }
+        }
+        match failed.first() {
+            None if replaced == 1 => self.show_toast(ctx, "Replaced 1 GIF"),
+            None => self.show_toast(ctx, format!("Replaced {replaced} GIFs")),
+            Some(e) => self.show_toast_for(ctx, format!("Replace failed: {e}"), 6.0),
+        }
+    }
+
     fn toast(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         let Some(toast) = &self.toast else {
@@ -665,7 +968,8 @@ impl LocalGifApp {
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.label(&toast.text);
+                    // Explicit line breaks only; don't wrap to the area's initial width.
+                    ui.add(egui::Label::new(&toast.text).wrap_mode(egui::TextWrapMode::Extend));
                 });
             });
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(toast.until - now));
@@ -673,32 +977,54 @@ impl LocalGifApp {
 }
 
 impl eframe::App for LocalGifApp {
-    /// Runs every frame, and also while the window is hidden (when woken by the tray icon).
+    /// Runs every frame, and also while the window is hidden
+    /// (when woken by the tray icon, the global shortcut or `localgif --toggle`).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.tray.is_none() {
-            return;
+        if self.widget.visible {
+            let focused = ctx.input(|i| i.viewport().focused.unwrap_or(false));
+            if self.widget.focused && !focused {
+                self.widget.unfocused_at = Some(Instant::now());
+            }
+            self.widget.focused = focused;
         }
 
-        let events: Vec<TrayEvent> = self.tray.as_ref().unwrap().events.try_iter().collect();
+        let events: Vec<AppEvent> = self.bg.event_rx.try_iter().collect();
         for event in events {
             match event {
-                TrayEvent::Toggle { x, y } => {
+                AppEvent::TrayClick { x, y } => {
                     if self.widget.visible {
                         self.hide_window(ctx);
                     } else {
                         self.show_window(ctx, Some((x, y)));
                     }
                 }
-                TrayEvent::Show => self.show_window(ctx, None),
-                TrayEvent::Quit => {
+                AppEvent::Toggle => {
+                    // In front: hide. Hidden, minimized or behind other windows: bring it up.
+                    // On X11, pressing a global shortcut briefly takes focus away from the
+                    // window, so a focus loss just now still counts as "in front".
+                    let just_unfocused = self
+                        .widget
+                        .unfocused_at
+                        .is_some_and(|t| t.elapsed() < Duration::from_millis(500));
+                    if self.widget.visible && (self.widget.focused || just_unfocused) {
+                        self.hide_window(ctx);
+                    } else {
+                        self.show_window(ctx, None);
+                    }
+                }
+                AppEvent::Show => self.show_window(ctx, None),
+                AppEvent::Quit => {
                     self.widget.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
         }
 
-        // The window's close button hides it to the tray instead of quitting.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.widget.quitting {
+        // With a tray icon, the window's close button hides it instead of quitting.
+        if self.bg.tray.is_some()
+            && ctx.input(|i| i.viewport().close_requested())
+            && !self.widget.quitting
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide_window(ctx);
         }
@@ -724,6 +1050,20 @@ impl eframe::App for LocalGifApp {
             self.library.refresh();
         }
         self.had_focus = focused;
+
+        // "/" jumps to the search bar (unless you're already typing somewhere).
+        let typing = ctx.memory(|m| m.focused().is_some());
+        if !typing
+            && !self.any_dialog_open()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Slash))
+        {
+            // Drop the "/" character so it isn't typed into the search bar.
+            ctx.input_mut(|i| {
+                i.events
+                    .retain(|e| !matches!(e, egui::Event::Text(t) if t == "/"))
+            });
+            ctx.memory_mut(|m| m.request_focus(search_id()));
+        }
 
         egui::Panel::top("top_bar")
             .frame(
@@ -770,21 +1110,38 @@ impl eframe::App for LocalGifApp {
             }
         });
 
+        // Esc closes the widget, unless a dialog is open (Esc closes that instead).
+        let no_dialog = !self.any_dialog_open();
+
         self.edit_label_modal(&ctx);
+        self.edit_tags_modal(&ctx);
         self.confirm_remove_modal(&ctx);
+        self.conflict_modal(&ctx);
         self.toast(&ctx);
 
-        if self.tray.is_some() {
+        if self.bg.tray.is_some() {
             if std::mem::take(&mut self.widget.start_hidden) {
                 self.hide_window(&ctx);
             }
-            // Esc closes the widget (unless a dialog inside it used the key).
-            let no_dialog = self.editing.is_none() && self.confirm_remove.is_none();
             if no_dialog
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
             {
                 self.hide_window(&ctx);
             }
+        }
+    }
+}
+
+fn search_id() -> Id {
+    Id::unique("search")
+}
+
+/// Adds comma-separated tags from `input` to `tags`, skipping duplicates (ignoring case).
+fn add_tags(tags: &mut Vec<String>, input: &str) {
+    for t in input.split(',') {
+        let t = t.trim().trim_start_matches('#').trim();
+        if !t.is_empty() && !tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+            tags.push(t.to_string());
         }
     }
 }
@@ -803,11 +1160,19 @@ fn cover_uv(tex: Vec2, target: Vec2) -> Rect {
 }
 
 /// Draws the label on a dark strip along the bottom of the tile.
-fn draw_label(painter: &egui::Painter, rect: Rect, text: &str) {
+fn draw_label(painter: &egui::Painter, rect: Rect, text: &str, tags: &[String]) {
     let mut job = LayoutJob::single_section(
         text.to_string(),
         egui::TextFormat::simple(FontId::proportional(12.5), Color32::WHITE),
     );
+    if !tags.is_empty() {
+        let tags: Vec<String> = tags.iter().map(|t| format!("#{t}")).collect();
+        job.append(
+            &format!("   {}", tags.join(" ")),
+            0.0,
+            egui::TextFormat::simple(FontId::proportional(11.0), Color32::from_gray(170)),
+        );
+    }
     job.wrap = egui::text::TextWrapping {
         max_width: rect.width() - 12.0,
         max_rows: 1,
