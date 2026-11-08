@@ -14,6 +14,8 @@ rfd = "0.18"
 dirs = "6"
 global-hotkey = "0.9"
 trash = "5"
+# GIF packs: ZIP archives with compression disabled (files are stored as-is).
+zip = { version = "9", default-features = false }
 
 # System tray icon (StatusNotifierItem) for the taskbar widget mode.
 [target.'cfg(target_os = "linux")'.dependencies]

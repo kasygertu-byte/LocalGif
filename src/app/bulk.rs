@@ -27,7 +27,7 @@ impl LocalGifApp {
             .collect()
     }
 
-    /// "N selected · Select all · None · Rename… · Tags… · Delete…".
+    /// "N selected · Select all · None · Rename… · Tags… · Export… · Delete…".
     /// `shown` is what "Select all" selects. `in_grid` adds a "Done" button.
     pub(super) fn bulk_bar(&mut self, ui: &mut egui::Ui, shown: &[u64], in_grid: bool) {
         let n = self.selected.len();
@@ -53,6 +53,17 @@ impl LocalGifApp {
                         input: String::new(),
                         remove: Vec::new(),
                     });
+                }
+                if ui
+                    .button("Export…")
+                    .on_hover_text(
+                        "Save the selected GIFs (with labels and tags) as one GIF pack file",
+                    )
+                    .clicked()
+                {
+                    let ctx = ui.ctx().clone();
+                    let ids = self.selected_ids();
+                    self.start_export(&ctx, &ids);
                 }
                 if ui
                     .button(RichText::new("Delete…").color(NSFW_RED))

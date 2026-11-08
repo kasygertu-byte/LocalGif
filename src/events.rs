@@ -17,6 +17,21 @@ pub enum AppEvent {
     Toggle,
     Show,
     Quit,
+    /// A GIF pack finished exporting (message for the user, or an error).
+    PackExported {
+        result: Result<String, String>,
+    },
+    /// A GIF pack was extracted (files + their metadata, and the temp folder).
+    PackExtracted {
+        #[allow(clippy::type_complexity)]
+        result: Result<
+            (
+                Vec<(std::path::PathBuf, crate::library::PackMeta)>,
+                std::path::PathBuf,
+            ),
+            String,
+        >,
+    },
     /// A WebP "GIF" finished converting to a real GIF for copying.
     Converted {
         id: u64,

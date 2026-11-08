@@ -12,6 +12,7 @@ mod ipc;
 mod ipc;
 mod library;
 mod loader;
+mod pack;
 #[cfg(target_os = "linux")]
 mod tray;
 #[cfg(not(target_os = "linux"))]

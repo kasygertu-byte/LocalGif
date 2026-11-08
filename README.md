@@ -48,6 +48,19 @@ open above the icon.
   and use count
 - Reads **animated WebP** too (Discord often saves "GIFs" as WebP, sometimes still named `.gif`)
 
+## GIF packs (move GIFs to another device)
+
+A **GIF pack** (`.gifpack`) is one file with GIFs plus their labels, tags, favorites and
+NSFW/Warning flags. It's a ZIP archive with **compression turned off**: every GIF is stored
+byte-for-byte, so nothing loses quality. Use counts and original-file locations are not included.
+
+- **Export all**: Settings → General → *Export all N GIFs…*
+- **Export some**: select GIFs (Select / Ctrl+click / Ctrl+drag, or the checkboxes in
+  Settings → GIFs), then *Export…* in the selection bar
+- **Import**: `+ Add` → *GIF pack…*, Settings → General → *Import a pack…*, or drag a `.gifpack`
+  onto the window. GIFs you already have (same content or same file name) ask
+  *Replace* (take the pack's version, including its label/tags/flags) or *Keep existing*
+
 **Removing GIFs** deletes LocalGif's copy. Tick the red **Also delete the original file** box to
 also move the file you originally added to the **Trash** (recoverable from there). LocalGif only
 knows where GIFs came from if they were added with this version or later.

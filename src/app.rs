@@ -1,8 +1,9 @@
 mod bulk;
+mod packs;
 mod settings;
 
 use crate::events::{AppEvent, EventSender};
-use crate::library::{Conflict, ConflictKind, GifEntry, Library};
+use crate::library::{AddResult, Conflict, ConflictKind, GifEntry, Library};
 use crate::loader::Loader;
 use crate::tray::TrayHandle;
 use eframe::egui::{
@@ -139,6 +140,8 @@ pub struct LocalGifApp {
     /// "Replace or skip?".
     conflicts: VecDeque<Conflict>,
     conflict_apply_all: bool,
+    /// Folders with files extracted from GIF packs, deleted once all conflicts are answered.
+    import_temp: Vec<PathBuf>,
     bg: Background,
     /// Keeps the global shortcut registered.
     _hotkey: Option<global_hotkey::GlobalHotKeyManager>,
@@ -219,6 +222,7 @@ impl LocalGifApp {
             tag_edit: None,
             conflicts: VecDeque::new(),
             conflict_apply_all: false,
+            import_temp: Vec::new(),
             bg,
             _hotkey: hotkey,
             widget,
@@ -346,6 +350,11 @@ impl LocalGifApp {
             return;
         }
         let result = self.library.add_files(&paths);
+        self.report_add(ctx, result);
+    }
+
+    /// Queues duplicates for the "Replace / Keep existing" prompt and shows a summary.
+    fn report_add(&mut self, ctx: &egui::Context, result: AddResult) {
         let errors = result.errors;
         // Already-added GIFs: ask "Replace or skip?" one by one.
         if self.conflicts.is_empty() {
@@ -426,6 +435,7 @@ impl LocalGifApp {
                     self.page = Page::Settings;
                 }
                 let mut picked = None;
+                let mut import_pack = false;
                 ui.menu_button("+ Add", |ui| {
                     if ui.button("GIF files…").clicked() {
                         ui.close();
@@ -441,7 +451,16 @@ impl LocalGifApp {
                             .pick_folder()
                             .map(|dir| vec![dir]);
                     }
+                    ui.separator();
+                    if ui.button("GIF pack…").clicked() {
+                        ui.close();
+                        import_pack = true;
+                    }
                 });
+                if import_pack {
+                    let ctx = ui.ctx().clone();
+                    self.start_import(&ctx, None);
+                }
                 if let Some(paths) = picked {
                     let ctx = ui.ctx().clone();
                     self.add_files(&ctx, paths);
@@ -1198,6 +1217,7 @@ impl LocalGifApp {
         };
 
         let mut choice: Option<bool> = None; // Some(true) = replace, Some(false) = skip.
+        let from_pack = conflict.meta.is_some();
         let apply_all = &mut self.conflict_apply_all;
         egui::Modal::new(Id::unique("conflict")).show(ctx, |ui| {
             ui.set_width(340.0);
@@ -1205,9 +1225,11 @@ impl LocalGifApp {
             ui.add_space(6.0);
             ui.label(format!("\"{new_name}\" {why} \"{existing_name}\"."));
             ui.label(
-                egui::RichText::new(
-                    "Replacing updates the GIF file and keeps its label, tags and favorite.",
-                )
+                egui::RichText::new(if from_pack {
+                    "Replacing uses the pack's version: its file, label, tags and flags."
+                } else {
+                    "Replacing updates the GIF file and keeps its label, tags and favorite."
+                })
                 .small()
                 .color(Color32::GRAY),
             );
@@ -1244,7 +1266,7 @@ impl LocalGifApp {
         let mut replaced = 0;
         let mut failed = Vec::new();
         for c in batch {
-            match self.library.replace(c.existing, &c.src) {
+            match self.library.replace(c.existing, &c.src, c.meta.as_ref()) {
                 Ok(()) => {
                     self.cache.remove(&c.existing); // Reload the new version.
                     replaced += 1;
@@ -1347,6 +1369,14 @@ impl eframe::App for LocalGifApp {
                     self.widget.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+                AppEvent::PackExported { result } => match result {
+                    Ok(msg) => self.show_toast_for(ctx, msg, 6.0),
+                    Err(e) => self.show_toast_for(ctx, format!("Export failed: {e}"), 8.0),
+                },
+                AppEvent::PackExtracted { result } => match result {
+                    Ok((items, temp)) => self.finish_import(ctx, items, temp),
+                    Err(e) => self.show_toast_for(ctx, format!("Import failed: {e}"), 8.0),
+                },
                 AppEvent::Converted { id, result } => match result {
                     Ok(gif) => self.put_on_clipboard(ctx, id, gif),
                     Err(e) => {
@@ -1378,6 +1408,14 @@ impl eframe::App for LocalGifApp {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
+        // Dropped GIF packs are imported; everything else is added as GIFs.
+        let (packs, dropped): (Vec<PathBuf>, Vec<PathBuf>) = dropped.into_iter().partition(|p| {
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case(crate::pack::EXTENSION))
+        });
+        for p in packs {
+            self.start_import(&ctx, Some(p));
+        }
         self.add_files(&ctx, dropped);
 
         // Pick up files copied into the library folder while the app was in the background.
@@ -1473,6 +1511,7 @@ impl eframe::App for LocalGifApp {
         self.confirm_remove_modal(&ctx);
         self.conflict_modal(&ctx);
         self.bulk_modal(&ctx);
+        self.cleanup_import_temp();
         self.toast(&ctx);
 
         // Esc leaves Settings / clears the selection before it hides the widget.

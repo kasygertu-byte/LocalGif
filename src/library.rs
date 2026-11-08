@@ -124,6 +124,16 @@ pub struct GifEntry {
 }
 
 impl GifEntry {
+    pub fn pack_meta(&self) -> PackMeta {
+        PackMeta {
+            label: self.label.clone(),
+            tags: self.tags.clone(),
+            favorite: self.favorite,
+            nsfw: self.nsfw,
+            warning: self.warning,
+        }
+    }
+
     /// The label if set, otherwise the file name without the extension.
     pub fn display_name(&self) -> &str {
         match &self.label {
@@ -184,6 +194,25 @@ pub struct Conflict {
     pub src: PathBuf,
     pub existing: u64,
     pub kind: ConflictKind,
+    /// Set when the file comes from a GIF pack: replacing then also applies the
+    /// pack's label, tags and flags.
+    pub meta: Option<PackMeta>,
+}
+
+/// The parts of a GIF's metadata that travel in a GIF pack. Usage counts and the
+/// original file location are left out: they only mean something on this device.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct PackMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub favorite: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nsfw: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warning: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -356,9 +385,6 @@ impl Library {
     /// GIFs that are already in the library are not added; they are returned as
     /// conflicts so the user can choose to replace them or not.
     pub fn add_files(&mut self, paths: &[PathBuf]) -> AddResult {
-        let mut result = AddResult::default();
-        let _ = fs::create_dir_all(&self.gif_dir);
-
         let mut files = Vec::new();
         for path in paths {
             if path.is_dir() {
@@ -367,8 +393,16 @@ impl Library {
                 files.push(path.clone());
             }
         }
+        self.add_items(files.into_iter().map(|f| (f, None)).collect())
+    }
 
-        for src in files {
+    /// Adds files, each optionally with metadata from a GIF pack. Files without
+    /// pack metadata remember where they were added from.
+    pub fn add_items(&mut self, items: Vec<(PathBuf, Option<PackMeta>)>) -> AddResult {
+        let mut result = AddResult::default();
+        let _ = fs::create_dir_all(&self.gif_dir);
+
+        for (src, meta) in items {
             let name = src
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -385,6 +419,7 @@ impl Library {
                     src,
                     existing,
                     kind,
+                    meta,
                 });
                 continue;
             }
@@ -394,19 +429,25 @@ impl Library {
                 continue;
             }
             let id = self.new_id();
+            let source = if meta.is_none() {
+                fs::canonicalize(&src).ok()
+            } else {
+                None // From a pack: there's no original file on this device.
+            };
+            let m = meta.unwrap_or_default();
             self.entries.push(GifEntry {
                 id,
                 file_name: dest.file_name().unwrap().to_string_lossy().into_owned(),
                 path: dest,
-                label: None,
-                favorite: false,
-                nsfw: false,
-                warning: false,
-                tags: Vec::new(),
+                label: m.label,
+                favorite: m.favorite,
+                nsfw: m.nsfw,
+                warning: m.warning,
+                tags: m.tags,
                 added: now_secs(),
                 uses: 0,
                 last_used: 0,
-                source: fs::canonicalize(&src).ok(),
+                source,
                 extra: Map::new(),
                 size,
             });
@@ -440,12 +481,24 @@ impl Library {
 
     /// Overwrites the library copy of GIF `id` with `src`.
     /// Its label, tags, favorite and NSFW state are kept.
-    pub fn replace(&mut self, id: u64, src: &Path) -> Result<(), String> {
+    /// With `meta` (from a GIF pack), the pack's label, tags and flags are applied too.
+    pub fn replace(&mut self, id: u64, src: &Path, meta: Option<&PackMeta>) -> Result<(), String> {
         let size = probe(src)?;
         let entry = self.get_mut(id).ok_or("GIF no longer exists")?;
         if !same_file(src, &entry.path) {
             fs::copy(src, &entry.path).map_err(|e| e.to_string())?;
-            entry.source = fs::canonicalize(src).ok();
+            entry.source = if meta.is_none() {
+                fs::canonicalize(src).ok()
+            } else {
+                None
+            };
+        }
+        if let Some(m) = meta {
+            entry.label = m.label.clone();
+            entry.tags = m.tags.clone();
+            entry.favorite = m.favorite;
+            entry.nsfw = m.nsfw;
+            entry.warning = m.warning;
         }
         entry.size = size;
         self.save();

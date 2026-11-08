@@ -113,6 +113,34 @@ impl LocalGifApp {
         }
 
         ui.add_space(16.0);
+        ui.label(RichText::new("GIF packs").strong());
+        ui.label(
+            RichText::new(
+                "Move GIFs to another device: a pack is one file with the GIFs (unchanged, \
+                 no quality loss) plus their labels, tags, favorites and NSFW/Warning flags. \
+                 To export only some GIFs, select them and use Export… in the selection bar.",
+            )
+            .small()
+            .color(Color32::GRAY),
+        );
+        ui.horizontal(|ui| {
+            let ctx = ui.ctx().clone();
+            if ui
+                .add_enabled(
+                    !self.library.entries.is_empty(),
+                    egui::Button::new(format!("Export all {} GIFs…", self.library.entries.len())),
+                )
+                .clicked()
+            {
+                let ids: Vec<u64> = self.library.entries.iter().map(|e| e.id).collect();
+                self.start_export(&ctx, &ids);
+            }
+            if ui.button("Import a pack…").clicked() {
+                self.start_import(&ctx, None);
+            }
+        });
+
+        ui.add_space(16.0);
         let shortcut = if self.library.hotkey.trim().is_empty() {
             "off".to_string()
         } else {
