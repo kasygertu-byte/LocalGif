@@ -57,6 +57,8 @@ pub struct Library {
     config_path: PathBuf,
     pub gif_dir: PathBuf,
     pub entries: Vec<GifEntry>,
+    /// Files in the library folder that could not be loaded, as "name: reason".
+    pub skipped: Vec<String>,
     next_id: u64,
 }
 
@@ -87,6 +89,7 @@ impl Library {
             config_path,
             gif_dir,
             entries: Vec::new(),
+            skipped: Vec::new(),
             next_id: 0,
         };
         lib.scan(&meta);
@@ -94,21 +97,47 @@ impl Library {
         lib
     }
 
-    fn scan(&mut self, meta: &HashMap<String, EntryMeta>) {
+    /// Picks up files that were added to or removed from the library folder
+    /// while the app was running. Known GIFs keep their state.
+    pub fn refresh(&mut self) {
+        let meta = self.meta_map();
+        if self.scan(&meta) {
+            self.save();
+        }
+    }
+
+    /// Syncs `entries` with the files in the library folder. Returns true if anything changed.
+    fn scan(&mut self, meta: &HashMap<String, EntryMeta>) -> bool {
         let Ok(dir) = fs::read_dir(&self.gif_dir) else {
-            return;
+            return false;
         };
+        let mut known: HashMap<String, GifEntry> = self
+            .entries
+            .drain(..)
+            .map(|e| (e.file_name.clone(), e))
+            .collect();
+        let mut changed = false;
+        self.skipped.clear();
+
         for item in dir.flatten() {
             let path = item.path();
-            if !path.is_file() || !is_gif(&path) {
+            if !path.is_file() || !(is_supported(&path) || is_video_ext(&path)) {
                 continue;
             }
             let Some(file_name) = path.file_name().and_then(|n| n.to_str()).map(String::from)
             else {
                 continue;
             };
-            let Ok((w, h)) = image::image_dimensions(&path) else {
+            if let Some(entry) = known.remove(&file_name) {
+                self.entries.push(entry);
                 continue;
+            }
+            let size = match probe(&path) {
+                Ok(size) => size,
+                Err(reason) => {
+                    self.skipped.push(format!("{file_name}: {reason}"));
+                    continue;
+                }
             };
             let m = meta.get(&file_name).cloned().unwrap_or_else(|| EntryMeta {
                 added: modified_secs(&path),
@@ -122,32 +151,42 @@ impl Library {
                 label: m.label,
                 favorite: m.favorite,
                 added: m.added,
-                size: [w.max(1), h.max(1)],
+                size,
             });
+            changed = true;
         }
+        // Whatever is left in `known` was deleted from the folder.
+        changed |= !known.is_empty();
+        self.skipped.sort();
         self.sort();
+        changed
     }
 
-    /// Copies the given files into the library folder. Non-GIF files are skipped.
+    /// Copies the given files into the library folder. Folders are searched for GIFs.
     /// Returns the number of GIFs added and a list of error messages.
     pub fn add_files(&mut self, paths: &[PathBuf]) -> (usize, Vec<String>) {
         let mut added = 0;
         let mut errors = Vec::new();
         let _ = fs::create_dir_all(&self.gif_dir);
 
-        for src in paths {
+        let mut files = Vec::new();
+        for path in paths {
+            if path.is_dir() {
+                collect_media_files(path, &mut files);
+            } else {
+                files.push(path.clone());
+            }
+        }
+
+        for src in &files {
             let name = src
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            if !is_gif(src) {
-                errors.push(format!("{name}: not a .gif file"));
-                continue;
-            }
-            let size = match image::image_dimensions(src) {
-                Ok((w, h)) => [w.max(1), h.max(1)],
-                Err(e) => {
-                    errors.push(format!("{name}: {e}"));
+            let size = match probe(src) {
+                Ok(size) => size,
+                Err(reason) => {
+                    errors.push(format!("{name}: {reason}"));
                     continue;
                 }
             };
@@ -257,22 +296,96 @@ impl Library {
     }
 }
 
-pub fn is_gif(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("gif"))
+/// File extensions LocalGif accepts. Discord often saves GIFs as animated WebP.
+pub fn is_supported(path: &Path) -> bool {
+    has_ext(path, &["gif", "webp"])
 }
 
-/// `dir/name.gif`, or `dir/name (2).gif`, `dir/name (3).gif`, ... if taken.
+fn is_video_ext(path: &Path) -> bool {
+    has_ext(path, &["mp4", "webm", "mov"])
+}
+
+fn has_ext(path: &Path, exts: &[&str]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// Checks what a file really contains (not just its extension) and returns its pixel size.
+/// Files saved from Discord are often WebP or MP4 even when their name ends in `.gif`.
+pub fn probe(path: &Path) -> Result<[u32; 2], String> {
+    use image::ImageFormat;
+    if is_video(path) {
+        return Err(
+            "this is actually a video (Discord often saves GIFs as MP4); videos aren't supported"
+                .into(),
+        );
+    }
+    let reader = image::ImageReader::open(path)
+        .and_then(|r| r.with_guessed_format())
+        .map_err(|e| e.to_string())?;
+    match reader.format() {
+        Some(ImageFormat::Gif | ImageFormat::WebP) => {
+            let (w, h) = reader
+                .into_dimensions()
+                .map_err(|e| format!("damaged or unreadable file ({e})"))?;
+            Ok([w.max(1), h.max(1)])
+        }
+        Some(format) => Err(format!(
+            "this is a {} image, not a GIF",
+            format
+                .extensions_str()
+                .first()
+                .unwrap_or(&"different")
+                .to_uppercase()
+        )),
+        None => Err("not a GIF file".into()),
+    }
+}
+
+/// Detects MP4/MOV (`ftyp` box) and WebM/MKV (EBML header) by their first bytes.
+fn is_video(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 12];
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
+    if f.read_exact(&mut head).is_err() {
+        return false;
+    }
+    &head[4..8] == b"ftyp" || head[..4] == [0x1A, 0x45, 0xDF, 0xA3]
+}
+
+/// Recursively collects GIF/WebP (and video, to report them) files in a folder.
+fn collect_media_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(read) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = read.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            collect_media_files(&path, out);
+        } else if is_supported(&path) || is_video_ext(&path) {
+            out.push(path);
+        }
+    }
+}
+
+/// `dir/name.ext`, or `dir/name (2).ext`, `dir/name (3).ext`, ... if taken.
 fn unique_path(dir: &Path, src: &Path) -> PathBuf {
     let stem = src
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "gif".into());
-    let mut candidate = dir.join(format!("{stem}.gif"));
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| "gif".into());
+    let mut candidate = dir.join(format!("{stem}.{ext}"));
     let mut n = 2;
     while candidate.exists() {
-        candidate = dir.join(format!("{stem} ({n}).gif"));
+        candidate = dir.join(format!("{stem} ({n}).{ext}"));
         n += 1;
     }
     candidate

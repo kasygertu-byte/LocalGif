@@ -1,11 +1,13 @@
-use crate::library::{GifEntry, Library, is_gif};
+use crate::library::{GifEntry, Library};
 use crate::loader::Loader;
+use crate::tray::{TrayEvent, TrayLink};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Pos2, Rect, Sense, Stroke,
     StrokeKind, TextureHandle, TextureOptions, Vec2, pos2, text::LayoutJob, vec2,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const ACCENT: Color32 = Color32::from_rgb(88, 101, 242);
 const STAR_YELLOW: Color32 = Color32::from_rgb(250, 199, 50);
@@ -83,11 +85,41 @@ pub struct LocalGifApp {
     /// GIF id + label text being edited.
     editing: Option<(u64, String)>,
     confirm_remove: Option<u64>,
+    /// Taskbar widget mode: `Some` when the system tray icon is running.
+    tray: Option<TrayLink>,
+    widget: WidgetState,
+    had_focus: bool,
+}
+
+/// Window state used in taskbar widget mode.
+#[derive(Default)]
+struct WidgetState {
+    visible: bool,
+    quitting: bool,
+    was_focused: bool,
+    /// Hide the window on the first frame (started with `--hidden`).
+    start_hidden: bool,
+    /// When the window was last hidden because it lost focus.
+    auto_hidden_at: Option<Instant>,
+    /// Don't hide on focus loss before this time (e.g. right after a file dialog).
+    keep_open_until: Option<Instant>,
 }
 
 impl LocalGifApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        tray: Option<TrayLink>,
+        start_hidden: bool,
+    ) -> Self {
         setup_style(&cc.egui_ctx);
+        if let Some(tray) = &tray {
+            let _ = tray.ctx.set(cc.egui_ctx.clone());
+        }
+        let widget = WidgetState {
+            visible: true,
+            start_hidden: start_hidden && tray.is_some(),
+            ..Default::default()
+        };
         Self {
             library: Library::load(),
             loader: Loader::new(cc.egui_ctx.clone()),
@@ -98,14 +130,51 @@ impl LocalGifApp {
             toast: None,
             editing: None,
             confirm_remove: None,
+            tray,
+            widget,
+            had_focus: true,
         }
     }
 
+    /// Shows the widget window, placed next to the tray icon if its position is known.
+    fn show_window(&mut self, ctx: &egui::Context, click: Option<(i32, i32)>) {
+        if let Some((x, y)) = click.filter(|&(x, y)| x != 0 || y != 0) {
+            let (ppp, outer) = ctx.input(|i| {
+                let v = i.viewport();
+                (v.native_pixels_per_point.unwrap_or(1.0), v.outer_rect)
+            });
+            let size = outer.map_or(vec2(560.0, 720.0), |r| r.size());
+            let click = pos2(x as f32 / ppp, y as f32 / ppp);
+            // Panel at the bottom: open above the icon. Panel at the top: open below it.
+            let y = if click.y > size.y + 12.0 {
+                click.y - size.y - 12.0
+            } else {
+                click.y + 12.0
+            };
+            let pos = pos2((click.x - size.x / 2.0).max(0.0), y);
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        self.widget.visible = true;
+        self.widget.was_focused = false;
+    }
+
+    fn hide_window(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.widget.visible = false;
+        self.widget.was_focused = false;
+    }
+
     fn show_toast(&mut self, ctx: &egui::Context, text: impl Into<String>) {
+        self.show_toast_for(ctx, text, 2.5);
+    }
+
+    fn show_toast_for(&mut self, ctx: &egui::Context, text: impl Into<String>, secs: f64) {
         let now = ctx.input(|i| i.time);
         self.toast = Some(Toast {
             text: text.into(),
-            until: now + 2.5,
+            until: now + secs,
         });
     }
 
@@ -144,10 +213,18 @@ impl LocalGifApp {
             1 => "Added 1 GIF".to_string(),
             n => format!("Added {n} GIFs"),
         };
-        if let Some(first) = errors.first() {
-            msg += &format!(" ({} skipped: {first})", errors.len());
+        if errors.is_empty() {
+            self.show_toast(ctx, msg);
+        } else {
+            msg += &format!(", {} skipped:", errors.len());
+            for e in errors.iter().take(5) {
+                msg += &format!("\n• {e}");
+            }
+            if errors.len() > 5 {
+                msg += &format!("\n…and {} more", errors.len() - 5);
+            }
+            self.show_toast_for(ctx, msg, 8.0);
         }
-        self.show_toast(ctx, msg);
     }
 
     fn handle_decoded(&mut self, ctx: &egui::Context) {
@@ -192,10 +269,13 @@ impl LocalGifApp {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ Add GIFs").clicked() {
+                    // The dialog takes focus; don't let that hide the widget.
+                    self.widget.keep_open_until = Some(Instant::now() + Duration::from_secs(2));
                     let picked = rfd::FileDialog::new()
                         .set_title("Add GIFs")
                         .add_filter("GIF", &["gif", "GIF"])
                         .pick_files();
+                    self.widget.keep_open_until = Some(Instant::now() + Duration::from_secs(1));
                     if let Some(paths) = picked {
                         let ctx = ui.ctx().clone();
                         self.add_files(&ctx, paths);
@@ -224,6 +304,25 @@ impl LocalGifApp {
                     );
                 });
             });
+
+        let skipped = &self.library.skipped;
+        if !skipped.is_empty() {
+            ui.add_space(4.0);
+            let text = match skipped.len() {
+                1 => "⚠ 1 file in your GIF folder can't be shown (hover for details)".to_string(),
+                n => format!("⚠ {n} files in your GIF folder can't be shown (hover for details)"),
+            };
+            ui.label(
+                egui::RichText::new(text)
+                    .small()
+                    .color(Color32::from_rgb(240, 180, 80)),
+            )
+            .on_hover_ui(|ui| {
+                for s in skipped {
+                    ui.label(s);
+                }
+            });
+        }
         ui.add_space(8.0);
     }
 
@@ -553,20 +652,78 @@ impl LocalGifApp {
 }
 
 impl eframe::App for LocalGifApp {
+    /// Runs every frame, and also while the window is hidden (when woken by the tray icon).
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.tray.is_none() {
+            return;
+        }
+
+        let events: Vec<TrayEvent> = self.tray.as_ref().unwrap().events.try_iter().collect();
+        for event in events {
+            match event {
+                TrayEvent::Toggle { x, y } => {
+                    // Clicking the tray icon takes focus from the window, which already
+                    // hid it. Don't immediately show it again in that case.
+                    let just_auto_hidden = self
+                        .widget
+                        .auto_hidden_at
+                        .is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+                    if self.widget.visible {
+                        self.hide_window(ctx);
+                    } else if !just_auto_hidden {
+                        self.show_window(ctx, Some((x, y)));
+                    }
+                }
+                TrayEvent::Show => self.show_window(ctx, None),
+                TrayEvent::Quit => {
+                    self.widget.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+
+        // The window's close button hides it to the tray instead of quitting.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.widget.quitting {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide_window(ctx);
+        }
+
+        // Like a popup: hide when the user clicks somewhere else.
+        let focused = ctx.input(|i| i.viewport().focused);
+        if self.widget.visible {
+            let keep_open = self
+                .widget
+                .keep_open_until
+                .is_some_and(|t| Instant::now() < t);
+            if self.widget.was_focused && focused == Some(false) && !keep_open {
+                self.hide_window(ctx);
+                self.widget.auto_hidden_at = Some(Instant::now());
+            } else {
+                self.widget.was_focused = focused == Some(true);
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.handle_decoded(&ctx);
 
-        // Drag & drop GIF files onto the window to add them.
+        // Drag & drop GIF files (or folders of GIFs) onto the window to add them.
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
                 .iter()
                 .map(|f| f.path().to_path_buf())
-                .filter(|p| is_gif(p))
                 .collect()
         });
         self.add_files(&ctx, dropped);
+
+        // Pick up files copied into the library folder while the app was in the background.
+        let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if focused && !self.had_focus {
+            self.library.refresh();
+        }
+        self.had_focus = focused;
 
         egui::Panel::top("top_bar")
             .frame(
@@ -616,6 +773,19 @@ impl eframe::App for LocalGifApp {
         self.edit_label_modal(&ctx);
         self.confirm_remove_modal(&ctx);
         self.toast(&ctx);
+
+        if self.tray.is_some() {
+            if std::mem::take(&mut self.widget.start_hidden) {
+                self.hide_window(&ctx);
+            }
+            // Esc closes the widget (unless a dialog inside it used the key).
+            let no_dialog = self.editing.is_none() && self.confirm_remove.is_none();
+            if no_dialog
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
+                self.hide_window(&ctx);
+            }
+        }
     }
 }
 

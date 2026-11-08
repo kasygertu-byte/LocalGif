@@ -4,8 +4,9 @@
 //! downscaled to thumbnail size to keep memory use reasonable.
 
 use eframe::egui;
-use image::AnimationDecoder;
 use image::codecs::gif::GifDecoder;
+use image::codecs::webp::WebPDecoder;
+use image::{AnimationDecoder, ImageFormat};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -100,12 +101,36 @@ fn worker(shared: Arc<Shared>, tx: Sender<Decoded>, ctx: egui::Context) {
 }
 
 fn decode(path: &Path) -> Result<Vec<Frame>, String> {
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let decoder = GifDecoder::new(BufReader::new(file)).map_err(|e| e.to_string())?;
+    let err = |e: image::ImageError| e.to_string();
+    let format = image::ImageReader::open(path)
+        .and_then(|r| r.with_guessed_format())
+        .map_err(|e| e.to_string())?
+        .format();
+    let reader = BufReader::new(File::open(path).map_err(|e| e.to_string())?);
+
+    // Decode by actual content: files named .gif can contain WebP data.
+    let raw_frames: Vec<image::Frame> = match format {
+        Some(ImageFormat::WebP) => {
+            let decoder = WebPDecoder::new(reader).map_err(err)?;
+            if decoder.has_animation() {
+                decoder
+                    .into_frames()
+                    .collect::<Result<_, _>>()
+                    .map_err(err)?
+            } else {
+                let still = image::DynamicImage::from_decoder(decoder).map_err(err)?;
+                vec![image::Frame::new(still.into_rgba8())]
+            }
+        }
+        _ => GifDecoder::new(reader)
+            .map_err(err)?
+            .into_frames()
+            .collect::<Result<_, _>>()
+            .map_err(err)?,
+    };
 
     let mut frames = Vec::new();
-    for frame in decoder.into_frames() {
-        let frame = frame.map_err(|e| e.to_string())?;
+    for frame in raw_frames {
         let (num, den) = frame.delay().numer_denom_ms();
         let mut ms = if den == 0 {
             0.0
