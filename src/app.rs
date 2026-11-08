@@ -1189,84 +1189,113 @@ impl LocalGifApp {
         let all_tags = self.library.all_tags();
         let mut save = false;
 
+        // Left: current tags, the input box and Save. Right: your other tags to pick from.
+        let total = (ctx.content_rect().width() - 80.0).clamp(280.0, 520.0);
+        let (left_w, right_w) = (total * 0.6, total * 0.4 - 12.0);
+
         let modal = egui::Modal::new(Id::unique("edit_tags")).show(ctx, |ui| {
-            ui.set_width(340.0);
             ui.heading(format!("Tags for \"{name}\""));
             ui.add_space(6.0);
 
-            // Current tags; click one to remove it.
-            if edit.tags.is_empty() {
-                ui.label(egui::RichText::new("No tags yet.").color(Color32::GRAY));
-            } else {
-                let mut remove = None;
-                ui.horizontal_wrapped(|ui| {
-                    for (i, tag) in edit.tags.iter().enumerate() {
-                        if ui
-                            .button(format!("{tag}  ✕"))
-                            .on_hover_text("Remove tag")
-                            .clicked()
-                        {
-                            remove = Some(i);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(left_w);
+
+                    // Current tags; click one to remove it.
+                    if edit.tags.is_empty() {
+                        ui.label(egui::RichText::new("No tags yet.").color(Color32::GRAY));
+                    } else {
+                        let mut remove = None;
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, tag) in edit.tags.iter().enumerate() {
+                                if ui
+                                    .button(format!("{tag}  ✕"))
+                                    .on_hover_text("Remove tag")
+                                    .clicked()
+                                {
+                                    remove = Some(i);
+                                }
+                            }
+                        });
+                        if let Some(i) = remove {
+                            edit.tags.remove(i);
                         }
                     }
-                });
-                if let Some(i) = remove {
-                    edit.tags.remove(i);
-                }
-            }
-            ui.add_space(6.0);
+                    ui.add_space(6.0);
 
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut edit.input)
-                    .hint_text("Add tags (Enter to add, comma for several)")
-                    .desired_width(f32::INFINITY),
-            );
-            if !resp.has_focus() && !resp.lost_focus() {
-                resp.request_focus();
-            }
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                if edit.input.trim().is_empty() {
-                    save = true; // Enter on an empty field saves.
-                } else {
-                    add_tags(&mut edit.tags, &edit.input);
-                    edit.input.clear();
-                }
-                resp.request_focus();
-            }
-
-            // Existing tags from other GIFs, filtered by what's typed.
-            let typed = edit.input.trim().to_lowercase();
-            let suggestions: Vec<&String> = all_tags
-                .iter()
-                .filter(|t| !edit.tags.iter().any(|x| x.eq_ignore_ascii_case(t)))
-                .filter(|t| typed.is_empty() || t.to_lowercase().contains(&typed))
-                .take(20)
-                .collect();
-            if !suggestions.is_empty() {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("Your tags (click to add):")
-                        .small()
-                        .color(Color32::GRAY),
-                );
-                let mut picked = None;
-                ui.horizontal_wrapped(|ui| {
-                    for tag in suggestions {
-                        if ui.small_button(tag.as_str()).clicked() {
-                            picked = Some(tag.clone());
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut edit.input)
+                            .hint_text("Add tags (Enter to add, comma for several)")
+                            .desired_width(f32::INFINITY),
+                    );
+                    if !resp.has_focus() && !resp.lost_focus() {
+                        resp.request_focus();
+                    }
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if edit.input.trim().is_empty() {
+                            save = true; // Enter on an empty field saves.
+                        } else {
+                            add_tags(&mut edit.tags, &edit.input);
+                            edit.input.clear();
                         }
+                        resp.request_focus();
+                    }
+
+                    ui.add_space(8.0);
+                    if ui.button("Save").clicked() {
+                        save = true;
                     }
                 });
-                if let Some(tag) = picked {
-                    edit.tags.push(tag);
-                    edit.input.clear();
-                }
-            }
 
-            ui.add_space(8.0);
-            if ui.button("Save").clicked() {
-                save = true;
-            }
+                ui.separator();
+
+                ui.vertical(|ui| {
+                    ui.set_width(right_w);
+                    ui.label(
+                        egui::RichText::new("Your tags (click to add)")
+                            .small()
+                            .color(Color32::GRAY),
+                    );
+                    // Existing tags from other GIFs, filtered by what's typed.
+                    let typed = edit.input.trim().trim_start_matches('#').to_lowercase();
+                    let suggestions: Vec<&String> = all_tags
+                        .iter()
+                        .filter(|t| !edit.tags.iter().any(|x| x.eq_ignore_ascii_case(t)))
+                        .filter(|t| typed.is_empty() || t.to_lowercase().contains(&typed))
+                        .collect();
+                    if suggestions.is_empty() {
+                        let text = if all_tags.is_empty() {
+                            "No tags yet"
+                        } else {
+                            "No matching tags"
+                        };
+                        ui.label(egui::RichText::new(text).color(Color32::GRAY));
+                    }
+                    let mut picked = None;
+                    egui::ScrollArea::vertical()
+                        .max_height(240.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for tag in suggestions {
+                                if ui
+                                    .add(
+                                        egui::Button::new(format!("#{tag}"))
+                                            .frame(false)
+                                            .truncate(),
+                                    )
+                                    .on_hover_text("Add this tag")
+                                    .clicked()
+                                {
+                                    picked = Some(tag.clone());
+                                }
+                            }
+                        });
+                    if let Some(tag) = picked {
+                        edit.tags.push(tag);
+                        edit.input.clear();
+                    }
+                });
+            });
         });
 
         if save {
