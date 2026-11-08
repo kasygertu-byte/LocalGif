@@ -818,7 +818,7 @@ mod tests {
         write_gif(&b, 200);
 
         let mut lib = temp_library(&root);
-        let result = lib.add_files(&[originals.clone()]);
+        let result = lib.add_files(std::slice::from_ref(&originals));
         assert_eq!(result.added, 2);
         let id_of = |lib: &Library, name: &str| {
             lib.entries.iter().find(|e| e.file_name == name).unwrap().id
@@ -845,7 +845,7 @@ mod tests {
 
         // The original's location survives a save + reload of library.json.
         write_gif(&b, 90);
-        lib.add_files(&[b.clone()]);
+        lib.add_files(std::slice::from_ref(&b));
         let meta: LibraryFile =
             serde_json::from_str(&fs::read_to_string(root.join("library.json")).unwrap()).unwrap();
         assert!(meta.gifs["b.gif"].source.is_some());
