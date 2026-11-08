@@ -855,10 +855,9 @@ impl LocalGifApp {
                 }
             }
 
-            if nsfw_censored {
-                draw_badge(&painter, rect, "NSFW", NSFW_RED);
-            } else if entry.warning && !warning_revealed {
-                draw_badge(&painter, rect, "WARNING", WARNING_ORANGE);
+            // A censored GIF shows every label it has (NSFW and/or WARNING).
+            if nsfw_censored || (entry.warning && !warning_revealed) {
+                draw_badges(&painter, rect, entry.nsfw, entry.warning);
             }
             draw_label(&painter, rect, entry.display_name(), &entry.tags);
 
@@ -1738,11 +1737,36 @@ fn draw_label(painter: &egui::Painter, rect: Rect, text: &str, tags: &[String]) 
 }
 
 /// "NSFW" / "WARNING" pill in the middle of a censored tile.
-fn draw_badge(painter: &egui::Painter, rect: Rect, text: &str, color: Color32) {
-    let galley = painter.layout_no_wrap(text.into(), FontId::proportional(16.0), Color32::WHITE);
-    let pill = Rect::from_center_size(rect.center(), galley.size() + vec2(20.0, 8.0));
-    painter.rect_filled(pill, CornerRadius::same(255), color);
-    painter.galley(pill.center() - galley.size() / 2.0, galley, Color32::WHITE);
+/// "NSFW" / "WARNING" pills in the middle of a censored tile, stacked when it has both.
+fn draw_badges(painter: &egui::Painter, rect: Rect, nsfw: bool, warning: bool) {
+    let badges: Vec<(&str, Color32)> = [
+        (nsfw, "NSFW", NSFW_RED),
+        (warning, "WARNING", WARNING_ORANGE),
+    ]
+    .into_iter()
+    .filter(|(on, ..)| *on)
+    .map(|(_, text, color)| (text, color))
+    .collect();
+
+    let gap = 6.0;
+    let galleys: Vec<_> = badges
+        .iter()
+        .map(|(text, _)| {
+            painter.layout_no_wrap(text.to_string(), FontId::proportional(16.0), Color32::WHITE)
+        })
+        .collect();
+    let pill_h = galleys.first().map_or(0.0, |g| g.size().y) + 8.0;
+    let total_h = badges.len() as f32 * pill_h + (badges.len().saturating_sub(1)) as f32 * gap;
+    let mut y = rect.center().y - total_h / 2.0;
+    for ((_, color), galley) in badges.iter().zip(galleys) {
+        let pill = Rect::from_center_size(
+            pos2(rect.center().x, y + pill_h / 2.0),
+            galley.size() + vec2(20.0, 8.0),
+        );
+        painter.rect_filled(pill, CornerRadius::same(255), *color);
+        painter.galley(pill.center() - galley.size() / 2.0, galley, Color32::WHITE);
+        y += pill_h + gap;
+    }
 }
 
 /// Five-pointed star, filled when `filled` is true, outlined otherwise.

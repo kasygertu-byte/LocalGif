@@ -1,7 +1,7 @@
 //! Enlarged view of a GIF (middle-click a GIF, or right-click → View larger),
 //! so small text in it is readable.
 
-use super::{GifState, LocalGifApp, NSFW_RED, WARNING_ORANGE, draw_badge};
+use super::{GifState, LocalGifApp, draw_badges};
 use eframe::egui::{self, Color32, Id, RichText, Sense, vec2};
 
 /// Small GIFs are scaled up at most this much.
@@ -22,11 +22,7 @@ impl LocalGifApp {
         let alt = ctx.input(|i| i.modifiers.alt);
         let nsfw_censored = entry.nsfw && !self.library.settings.uncensor_nsfw;
         let censored = (nsfw_censored || entry.warning) && !preview.reveal && !alt;
-        let badge = if nsfw_censored {
-            ("NSFW", NSFW_RED)
-        } else {
-            ("WARNING", WARNING_ORANGE)
-        };
+        let (nsfw, warning) = (entry.nsfw, entry.warning);
 
         // Leave room around the image for the backdrop, the name and the buttons.
         let room = ctx.content_rect().size() - vec2(64.0, 150.0);
@@ -53,7 +49,7 @@ impl LocalGifApp {
                     if censored {
                         let painter = ui.painter_at(rect);
                         painter.rect_filled(rect, 6, Color32::from_black_alpha(110));
-                        draw_badge(&painter, rect, badge.0, badge.1);
+                        draw_badges(&painter, rect, nsfw, warning);
                     }
                     if let Some(dt) = until_next {
                         ctx.request_repaint_after(std::time::Duration::from_secs_f64(
