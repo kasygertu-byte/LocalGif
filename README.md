@@ -24,15 +24,17 @@ open above the icon.
   It still copies normally when clicked; *Unmark as NSFW* restores it.
   Uncheck **Show NSFW** to hide NSFW GIFs completely
 - **Warning tag**: right-click → *Mark as Warning* for an orange WARNING label. Like NSFW it's
-  blurred, but it's revealed (and plays) while you hover over it
+  blurred, but it's revealed (and plays) while you hover over it, after an optional
+  **Warning delay** (Settings → General, 0.1 s steps)
 - **Peek**: hold **Alt** and hover over an NSFW GIF to reveal it and play it
 - **Hover to play**: when checked, GIFs stay still until you hover over them
 - **Bulk select**: click **Select**, Ctrl+click GIFs, or **hold Ctrl and drag** across GIFs to
   select several (starting a Ctrl+drag on a selected GIF deselects instead), then use the bar at
   the bottom to **Rename…** (optionally numbered: "Label 1", "Label 2", …), edit **Tags…**
-  (add tags to all, or remove tags from all) or **Delete…** them. Esc or **Done** ends selecting
+  (add tags to all, or remove tags from all) or **Delete…** them (optionally also moving the
+  original files to the Trash, see below). Esc or **Done** ends selecting
 - **⚙ Settings** page:
-  - *General*: scroll speed (0.25×–4×), show/hide NSFW, hover to play
+  - *General*: scroll speed (0.25×–4×), show/hide NSFW, Warning delay, hover to play
   - *Tags*: every tag and how many GIFs have it
   - *GIFs*: a searchable list of every GIF (including hidden NSFW ones) with checkboxes for
     the same bulk Rename / Tags / Delete actions
@@ -44,6 +46,10 @@ open above the icon.
   asks whether to **Replace** it or **Keep existing**. Replacing keeps its label, tags, favorite
   and use count
 - Reads **animated WebP** too (Discord often saves "GIFs" as WebP, sometimes still named `.gif`)
+
+**Removing GIFs** deletes LocalGif's copy. Tick the red **Also delete the original file** box to
+also move the file you originally added to the **Trash** (recoverable from there). LocalGif only
+knows where GIFs came from if they were added with this version or later.
 
 Right-click menu: Copy, Add/Remove favorite, Mark/Unmark as NSFW, Mark/Unmark as Warning, Edit label, Edit tags, Reset label, Remove from library.
 

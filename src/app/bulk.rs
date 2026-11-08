@@ -1,6 +1,6 @@
 //! Bulk selection: rename, tag or delete several GIFs at once.
 
-use super::{LocalGifApp, NSFW_RED, add_tags};
+use super::{LocalGifApp, NSFW_RED, add_tags, delete_originals_checkbox};
 use eframe::egui::{self, Color32, Id, RichText};
 
 pub enum BulkDialog {
@@ -58,6 +58,7 @@ impl LocalGifApp {
                     .button(RichText::new("Delete…").color(NSFW_RED))
                     .clicked()
                 {
+                    self.delete_originals = false;
                     self.bulk = Some(BulkDialog::Delete);
                 }
             });
@@ -97,6 +98,12 @@ impl LocalGifApp {
             }
         }
         sel_tags.sort_by_key(|(t, _)| t.to_lowercase());
+        let sources: Vec<_> = ids
+            .iter()
+            .filter_map(|id| self.library.get(*id))
+            .map(|e| e.source.clone())
+            .collect();
+        let delete_originals = &mut self.delete_originals;
 
         let mut apply = false;
         let mut cancel = false;
@@ -224,13 +231,12 @@ impl LocalGifApp {
                     }
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new(
-                            "They're deleted from your LocalGif library folder. \
-                             The original files you added are not affected.",
-                        )
-                        .small()
-                        .color(Color32::GRAY),
+                        RichText::new("They're deleted from your LocalGif library folder.")
+                            .small()
+                            .color(Color32::GRAY),
                     );
+                    ui.add_space(6.0);
+                    delete_originals_checkbox(ui, delete_originals, &sources);
                 }
             }
 
@@ -238,13 +244,14 @@ impl LocalGifApp {
             ui.horizontal(|ui| {
                 let label = match dialog {
                     BulkDialog::Rename { .. } => RichText::new("Rename"),
-                    BulkDialog::Tags { .. } => RichText::new("Apply"),
+                    BulkDialog::Tags { .. } => RichText::new("Save"),
                     BulkDialog::Delete => RichText::new("Delete").color(NSFW_RED),
                 };
                 if ui.button(label).clicked() {
                     apply = true;
                 }
-                if ui.button("Cancel").clicked() {
+                // The tag dialog only has Save (Esc / clicking outside still closes it).
+                if !matches!(dialog, BulkDialog::Tags { .. }) && ui.button("Cancel").clicked() {
                     cancel = true;
                 }
             });
@@ -282,19 +289,12 @@ impl LocalGifApp {
                     self.show_toast(ctx, format!("Updated tags on {n} GIFs"));
                 }
                 BulkDialog::Delete => {
-                    let (removed, error) = self.library.remove_many(&ids);
+                    let report = self.library.remove_many(&ids, self.delete_originals);
                     for id in &ids {
                         self.cache.remove(id);
                     }
                     self.selected.clear();
-                    match error {
-                        None => self.show_toast(ctx, format!("Deleted {removed} GIFs")),
-                        Some(e) => self.show_toast_for(
-                            ctx,
-                            format!("Deleted {removed} GIFs; some failed: {e}"),
-                            6.0,
-                        ),
-                    }
+                    self.show_toast_for(ctx, report.summary(), 6.0);
                 }
             }
         } else if cancel || modal.should_close() {

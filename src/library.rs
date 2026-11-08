@@ -30,6 +30,9 @@ struct EntryMeta {
     /// Unix timestamp (seconds) of the last copy.
     #[serde(default, skip_serializing_if = "is_zero")]
     last_used: u64,
+    /// Where the GIF was added from (the original file).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<PathBuf>,
     /// Fields this build doesn't know (written by a newer LocalGif). Kept as-is so
     /// running an older build never deletes data a newer one saved.
     #[serde(flatten)]
@@ -57,6 +60,8 @@ pub struct Settings {
     pub hover_to_play: bool,
     /// Mouse-wheel scroll speed multiplier (1.0 = normal).
     pub scroll_speed: f32,
+    /// Seconds a Warning GIF must be hovered before it's revealed.
+    pub warning_delay: f32,
     /// Settings from a newer LocalGif, kept as-is.
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -68,6 +73,7 @@ impl Default for Settings {
             show_nsfw: true,
             hover_to_play: false,
             scroll_speed: 1.0,
+            warning_delay: 0.0,
             extra: Map::new(),
         }
     }
@@ -105,6 +111,9 @@ pub struct GifEntry {
     pub added: u64,
     pub uses: u32,
     pub last_used: u64,
+    /// The original file it was added from; `None` if unknown (added before this
+    /// was recorded, or put into the library folder directly).
+    pub source: Option<PathBuf>,
     /// Unknown fields from `library.json`, written back unchanged.
     extra: Map<String, Value>,
     /// Pixel size `[width, height]`, read from the GIF header.
@@ -121,6 +130,42 @@ impl GifEntry {
                 .and_then(|s| s.to_str())
                 .unwrap_or(&self.file_name),
         }
+    }
+}
+
+#[derive(Default)]
+pub struct RemoveReport {
+    pub removed: usize,
+    pub originals_trashed: usize,
+    /// Originals that couldn't be deleted because their location isn't known
+    /// (or the file is already gone).
+    pub originals_unknown: usize,
+    pub errors: Vec<String>,
+}
+
+impl RemoveReport {
+    /// A short summary for a notification.
+    pub fn summary(&self) -> String {
+        let mut msg = match self.removed {
+            1 => "Removed 1 GIF".to_string(),
+            n => format!("Removed {n} GIFs"),
+        };
+        if self.originals_trashed > 0 {
+            msg += &format!(
+                ", moved {} original file(s) to the Trash",
+                self.originals_trashed
+            );
+        }
+        if self.originals_unknown > 0 {
+            msg += &format!(
+                "\n{} original file(s) not found (added before LocalGif remembered where from, or already gone)",
+                self.originals_unknown
+            );
+        }
+        if let Some(e) = self.errors.first() {
+            msg += &format!("\nSome failed: {e}");
+        }
+        msg
     }
 }
 
@@ -286,6 +331,7 @@ impl Library {
                 added: m.added,
                 uses: m.uses,
                 last_used: m.last_used,
+                source: m.source,
                 extra: m.extra,
                 size,
             });
@@ -357,6 +403,7 @@ impl Library {
                 added: now_secs(),
                 uses: 0,
                 last_used: 0,
+                source: fs::canonicalize(&src).ok(),
                 extra: Map::new(),
                 size,
             });
@@ -395,6 +442,7 @@ impl Library {
         let entry = self.get_mut(id).ok_or("GIF no longer exists")?;
         if !same_file(src, &entry.path) {
             fs::copy(src, &entry.path).map_err(|e| e.to_string())?;
+            entry.source = fs::canonicalize(src).ok();
         }
         entry.size = size;
         self.save();
@@ -497,27 +545,39 @@ impl Library {
         self.save();
     }
 
-    /// Removes several GIFs. Returns how many were removed and the first error, if any.
-    pub fn remove_many(&mut self, ids: &[u64]) -> (usize, Option<String>) {
-        let mut removed = 0;
-        let mut first_error = None;
+    /// Removes GIFs from the library and deletes their library copies.
+    /// With `also_originals`, the original files they were added from are moved
+    /// to the Trash too (when known).
+    pub fn remove_many(&mut self, ids: &[u64], also_originals: bool) -> RemoveReport {
+        let mut report = RemoveReport::default();
+        let mut originals = Vec::new();
         self.entries.retain(|e| {
             if !ids.contains(&e.id) {
                 return true;
             }
-            match fs::remove_file(&e.path) {
-                Ok(()) => {
-                    removed += 1;
-                    false
-                }
-                Err(err) => {
-                    first_error.get_or_insert_with(|| format!("{}: {err}", e.file_name));
-                    true
+            if let Err(err) = fs::remove_file(&e.path) {
+                report.errors.push(format!("{}: {err}", e.file_name));
+                return true;
+            }
+            report.removed += 1;
+            if also_originals {
+                match &e.source {
+                    Some(src) if src.is_file() && !same_file(src, &e.path) => {
+                        originals.push(src.clone());
+                    }
+                    _ => report.originals_unknown += 1,
                 }
             }
+            false
         });
+        for src in originals {
+            match trash::delete(&src) {
+                Ok(()) => report.originals_trashed += 1,
+                Err(err) => report.errors.push(format!("{}: {err}", src.display())),
+            }
+        }
         self.save();
-        (removed, first_error)
+        report
     }
 
     /// Every tag used in the library, sorted, without duplicates.
@@ -539,17 +599,6 @@ impl Library {
             e.label = (!label.is_empty()).then(|| label.to_string());
             self.save();
         }
-    }
-
-    /// Removes the GIF from the library and deletes its copy in the library folder.
-    pub fn remove(&mut self, id: u64) -> Result<(), String> {
-        let Some(idx) = self.entries.iter().position(|e| e.id == id) else {
-            return Ok(());
-        };
-        fs::remove_file(&self.entries[idx].path).map_err(|e| e.to_string())?;
-        self.entries.remove(idx);
-        self.save();
-        Ok(())
     }
 
     fn save(&self) {
@@ -588,6 +637,7 @@ impl Library {
                         added: e.added,
                         uses: e.uses,
                         last_used: e.last_used,
+                        source: e.source.clone(),
                         extra: e.extra.clone(),
                     },
                 )
@@ -726,4 +776,80 @@ fn modified_secs(path: &Path) -> u64 {
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A library in a temp folder, without touching the user's real one.
+    fn temp_library(root: &Path) -> Library {
+        let gif_dir = root.join("gifs");
+        fs::create_dir_all(&gif_dir).unwrap();
+        Library {
+            config_path: root.join("library.json"),
+            gif_dir,
+            hotkey: String::new(),
+            settings: Settings::default(),
+            extra: Map::new(),
+            load_warning: None,
+            entries: Vec::new(),
+            skipped: Vec::new(),
+            next_id: 0,
+        }
+    }
+
+    fn write_gif(path: &Path, color: u8) {
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([color, 0, 0, 255]));
+        img.save_with_format(path, image::ImageFormat::Gif).unwrap();
+    }
+
+    #[test]
+    fn remembers_original_and_can_trash_it() {
+        let root = std::env::temp_dir().join(format!("localgif-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let originals = root.join("originals");
+        fs::create_dir_all(&originals).unwrap();
+        // Keep the test's Trash inside the temp folder.
+        unsafe { std::env::set_var("XDG_DATA_HOME", root.join("data")) };
+
+        let (a, b) = (originals.join("a.gif"), originals.join("b.gif"));
+        write_gif(&a, 10);
+        write_gif(&b, 200);
+
+        let mut lib = temp_library(&root);
+        let result = lib.add_files(&[originals.clone()]);
+        assert_eq!(result.added, 2);
+        let id_of = |lib: &Library, name: &str| {
+            lib.entries.iter().find(|e| e.file_name == name).unwrap().id
+        };
+        let id_a = id_of(&lib, "a.gif");
+        let id_b = id_of(&lib, "b.gif");
+        assert_eq!(
+            lib.get(id_a).unwrap().source.as_deref(),
+            Some(fs::canonicalize(&a).unwrap().as_path())
+        );
+
+        // Without the option: only the library copy goes, the original stays.
+        let report = lib.remove_many(&[id_a], false);
+        assert_eq!((report.removed, report.originals_trashed), (1, 0));
+        assert!(a.exists());
+        assert!(!lib.gif_dir.join("a.gif").exists());
+
+        // With the option: the original is moved to the Trash.
+        let report = lib.remove_many(&[id_b], true);
+        assert_eq!((report.removed, report.originals_trashed), (1, 1));
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(!b.exists());
+        assert!(root.join("data/Trash/files/b.gif").exists());
+
+        // The original's location survives a save + reload of library.json.
+        write_gif(&b, 90);
+        lib.add_files(&[b.clone()]);
+        let meta: LibraryFile =
+            serde_json::from_str(&fs::read_to_string(root.join("library.json")).unwrap()).unwrap();
+        assert!(meta.gifs["b.gif"].source.is_some());
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

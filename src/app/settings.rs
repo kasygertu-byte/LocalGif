@@ -75,6 +75,20 @@ impl LocalGifApp {
                     .changed();
                 ui.end_row();
 
+                ui.label("Warning delay");
+                ui.horizontal(|ui| {
+                    let resp = ui
+                        .add(
+                            egui::Slider::new(&mut s.warning_delay, 0.0..=5.0)
+                                .step_by(0.1)
+                                .fixed_decimals(1)
+                                .suffix(" s"),
+                        )
+                        .on_hover_text("How long to hover over a Warning GIF before it's shown");
+                    save |= resp.drag_stopped() || (resp.changed() && !resp.dragged());
+                });
+                ui.end_row();
+
                 ui.label("Animation");
                 save |= ui
                     .checkbox(&mut s.hover_to_play, "Play GIFs only while hovered")

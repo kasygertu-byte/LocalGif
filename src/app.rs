@@ -130,6 +130,10 @@ pub struct LocalGifApp {
     /// GIF id + label text being edited.
     editing: Option<(u64, String)>,
     confirm_remove: Option<u64>,
+    /// "Also delete the original file" checkbox in the delete dialogs.
+    delete_originals: bool,
+    /// The GIF currently hovered and since when (for the Warning reveal delay).
+    hover_start: Option<(u64, f64)>,
     tag_edit: Option<TagEdit>,
     /// GIFs the user tried to add that are already in the library, waiting for
     /// "Replace or skip?".
@@ -210,6 +214,8 @@ impl LocalGifApp {
             toast: None,
             editing: None,
             confirm_remove: None,
+            delete_originals: false,
+            hover_start: None,
             tag_edit: None,
             conflicts: VecDeque::new(),
             conflict_apply_all: false,
@@ -678,6 +684,8 @@ impl LocalGifApp {
         if !down {
             self.paint_select = None;
         }
+        let warning_delay = self.library.settings.warning_delay as f64;
+        let mut hovered_id = None;
 
         for (entry, (offset, size)) in shown.iter().zip(placed) {
             let rect = Rect::from_min_size(area.min + offset, size);
@@ -699,6 +707,25 @@ impl LocalGifApp {
             let hovered = ui.rect_contains_pointer(rect);
             // Alt + hover reveals (and plays) NSFW and Warning GIFs.
             let peek = alt && hovered;
+            // Warning GIFs are revealed after hovering for `warning_delay` seconds.
+            let hovered_for = if hovered {
+                hovered_id = Some(entry.id);
+                match self.hover_start {
+                    Some((id, since)) if id == entry.id => now - since,
+                    _ => {
+                        self.hover_start = Some((entry.id, now));
+                        0.0
+                    }
+                }
+            } else {
+                0.0
+            };
+            let warning_revealed = peek || (hovered && hovered_for >= warning_delay);
+            if entry.warning && hovered && !warning_revealed {
+                // Repaint when the delay is over.
+                let wait = warning_delay - hovered_for;
+                next_repaint = Some(next_repaint.map_or(wait, |r| r.min(wait)));
+            }
 
             // Ctrl + click / Ctrl + drag across GIFs selects them.
             // The first GIF pressed decides whether the drag selects or deselects.
@@ -725,7 +752,9 @@ impl LocalGifApp {
             painter.rect_filled(rect, TILE_RADIUS, TILE_BG);
             match &item.state {
                 // NSFW: censored unless Alt+hovered. Warning: censored until hovered.
-                GifState::Ready(gif) if (entry.nsfw && !peek) || (entry.warning && !hovered) => {
+                GifState::Ready(gif)
+                    if (entry.nsfw && !peek) || (entry.warning && !warning_revealed) =>
+                {
                     // Censored: stretched tiny preview (looks blurred), darkened, label on top.
                     let tex = &gif.censored;
                     egui::Image::from_texture(tex)
@@ -773,7 +802,7 @@ impl LocalGifApp {
 
             if entry.nsfw && !peek {
                 draw_badge(&painter, rect, "NSFW", NSFW_RED);
-            } else if entry.warning && !hovered {
+            } else if entry.warning && !warning_revealed {
                 draw_badge(&painter, rect, "WARNING", WARNING_ORANGE);
             }
             draw_label(&painter, rect, entry.display_name(), &entry.tags);
@@ -902,6 +931,9 @@ impl LocalGifApp {
             });
         }
 
+        if hovered_id.is_none() {
+            self.hover_start = None;
+        }
         if let Some(dt) = next_repaint {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_secs_f64(dt.max(0.005)));
@@ -935,7 +967,10 @@ impl LocalGifApp {
                 }
             }
             Action::ResetLabel(id) => self.library.set_label(id, ""),
-            Action::AskRemove(id) => self.confirm_remove = Some(id),
+            Action::AskRemove(id) => {
+                self.delete_originals = false;
+                self.confirm_remove = Some(id);
+            }
         }
     }
 
@@ -991,6 +1026,8 @@ impl LocalGifApp {
             self.confirm_remove = None;
             return;
         };
+        let known = self.library.get(id).and_then(|e| e.source.clone());
+        let delete_originals = &mut self.delete_originals;
         let mut remove = false;
         let mut cancel = false;
 
@@ -999,9 +1036,10 @@ impl LocalGifApp {
             ui.heading("Remove GIF?");
             ui.add_space(6.0);
             ui.label(format!(
-                "\"{name}\" will be deleted from your LocalGif library folder. \
-                 The original file you added is not affected."
+                "\"{name}\" will be deleted from your LocalGif library folder."
             ));
+            ui.add_space(6.0);
+            delete_originals_checkbox(ui, delete_originals, &[known]);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Remove").clicked() {
@@ -1014,13 +1052,15 @@ impl LocalGifApp {
         });
 
         if remove {
-            match self.library.remove(id) {
-                Ok(()) => {
-                    self.cache.remove(&id);
-                    self.show_toast(ctx, format!("Removed \"{name}\""));
-                }
-                Err(e) => self.show_toast(ctx, format!("Could not remove: {e}")),
-            }
+            let report = self.library.remove_many(&[id], self.delete_originals);
+            self.cache.remove(&id);
+            self.show_toast_for(
+                ctx,
+                report
+                    .summary()
+                    .replacen("1 GIF", &format!("\"{name}\""), 1),
+                5.0,
+            );
             self.confirm_remove = None;
         } else if cancel || modal.should_close() {
             self.confirm_remove = None;
@@ -1038,7 +1078,6 @@ impl LocalGifApp {
             .unwrap_or_default();
         let all_tags = self.library.all_tags();
         let mut save = false;
-        let mut cancel = false;
 
         let modal = egui::Modal::new(Id::unique("edit_tags")).show(ctx, |ui| {
             ui.set_width(340.0);
@@ -1115,14 +1154,9 @@ impl LocalGifApp {
             }
 
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    save = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
-            });
+            if ui.button("Save").clicked() {
+                save = true;
+            }
         });
 
         if save {
@@ -1131,7 +1165,8 @@ impl LocalGifApp {
             let id = edit.id;
             self.library.set_tags(id, &tags);
             self.tag_edit = None;
-        } else if cancel || modal.should_close() {
+        } else if modal.should_close() {
+            // Esc / clicking outside closes without saving.
             self.tag_edit = None;
         }
     }
@@ -1502,6 +1537,37 @@ fn draw_checkbox(painter: &egui::Painter, center: Pos2, checked: bool) {
         painter.circle_filled(center, 10.0, Color32::from_black_alpha(140));
         painter.circle_stroke(center, 9.0, Stroke::new(1.5, Color32::WHITE));
     }
+}
+
+/// Red "Also delete the original file" checkbox for the delete dialogs.
+/// `sources` are the original files of the GIFs being deleted (`None` = unknown).
+fn delete_originals_checkbox(ui: &mut egui::Ui, checked: &mut bool, sources: &[Option<PathBuf>]) {
+    let known = sources.iter().flatten().filter(|p| p.is_file()).count();
+    let label = if sources.len() == 1 {
+        "Also delete the original file"
+    } else {
+        "Also delete the original files"
+    };
+    ui.add_enabled_ui(known > 0, |ui| {
+        ui.checkbox(checked, egui::RichText::new(label).color(NSFW_RED).strong());
+    });
+    let note = if known == 0 {
+        "LocalGif doesn't know where this was added from (added before it kept track, \
+         or the original is already gone)."
+            .to_string()
+    } else if sources.len() == 1 {
+        let path = sources[0].as_ref().unwrap();
+        format!("Moves {} to the Trash.", path.display())
+    } else if known < sources.len() {
+        format!(
+            "Moves {known} original file(s) to the Trash. The other {} weren't found \
+             (added before LocalGif kept track, or already gone).",
+            sources.len() - known
+        )
+    } else {
+        format!("Moves the {known} original files to the Trash.")
+    };
+    ui.label(egui::RichText::new(note).small().color(Color32::GRAY));
 }
 
 fn search_id() -> Id {
