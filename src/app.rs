@@ -685,6 +685,7 @@ impl LocalGifApp {
             self.paint_select = None;
         }
         let warning_delay = self.library.settings.warning_delay as f64;
+        let uncensor_nsfw = self.library.settings.uncensor_nsfw;
         let mut hovered_id = None;
 
         for (entry, (offset, size)) in shown.iter().zip(placed) {
@@ -707,6 +708,8 @@ impl LocalGifApp {
             let hovered = ui.rect_contains_pointer(rect);
             // Alt + hover reveals (and plays) NSFW and Warning GIFs.
             let peek = alt && hovered;
+            // NSFW GIFs are blurred unless censoring is turned off or Alt-peeked.
+            let nsfw_censored = entry.nsfw && !uncensor_nsfw && !peek;
             // Warning GIFs are revealed after hovering for `warning_delay` seconds.
             let hovered_for = if hovered {
                 hovered_id = Some(entry.id);
@@ -752,9 +755,7 @@ impl LocalGifApp {
             painter.rect_filled(rect, TILE_RADIUS, TILE_BG);
             match &item.state {
                 // NSFW: censored unless Alt+hovered. Warning: censored until hovered.
-                GifState::Ready(gif)
-                    if (entry.nsfw && !peek) || (entry.warning && !warning_revealed) =>
-                {
+                GifState::Ready(gif) if nsfw_censored || (entry.warning && !warning_revealed) => {
                     // Censored: stretched tiny preview (looks blurred), darkened, label on top.
                     let tex = &gif.censored;
                     egui::Image::from_texture(tex)
@@ -800,7 +801,7 @@ impl LocalGifApp {
                 }
             }
 
-            if entry.nsfw && !peek {
+            if nsfw_censored {
                 draw_badge(&painter, rect, "NSFW", NSFW_RED);
             } else if entry.warning && !warning_revealed {
                 draw_badge(&painter, rect, "WARNING", WARNING_ORANGE);

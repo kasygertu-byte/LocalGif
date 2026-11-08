@@ -70,9 +70,19 @@ impl LocalGifApp {
 
                 ui.label("NSFW GIFs");
                 save |= ui
-                    .checkbox(&mut s.show_nsfw, "Show NSFW GIFs (censored)")
+                    .checkbox(&mut s.show_nsfw, "Show NSFW GIFs")
                     .on_hover_text("Unchecked: NSFW GIFs are hidden completely")
                     .changed();
+                ui.end_row();
+
+                ui.label("");
+                ui.add_enabled_ui(s.show_nsfw, |ui| {
+                    save |= ui
+                        .checkbox(&mut s.uncensor_nsfw, "Don't censor NSFW GIFs")
+                        .on_hover_text("Show NSFW GIFs normally instead of blurred")
+                        .on_disabled_hover_text("Only applies while NSFW GIFs are shown")
+                        .changed();
+                });
                 ui.end_row();
 
                 ui.label("Warning delay");
@@ -153,6 +163,7 @@ impl LocalGifApp {
     }
 
     fn settings_gifs(&mut self, ui: &mut egui::Ui, visible_ids: &mut HashSet<u64>) {
+        let s_uncensor = self.library.settings.uncensor_nsfw;
         ui.add(
             egui::TextEdit::singleline(&mut self.settings_search)
                 .hint_text("Search by label, file name or tag")
@@ -204,7 +215,8 @@ impl LocalGifApp {
                             ui.allocate_exact_size(vec2(THUMB_SIZE, THUMB_SIZE), Sense::hover());
                         ui.painter().rect_filled(rect, 4, super::TILE_BG);
                         if let GifState::Ready(gif) = &item.state {
-                            let tex = if entry.nsfw || entry.warning {
+                            let censor = (entry.nsfw && !s_uncensor) || entry.warning;
+                            let tex = if censor {
                                 &gif.censored
                             } else {
                                 &gif.textures[0]

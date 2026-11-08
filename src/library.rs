@@ -62,6 +62,8 @@ pub struct Settings {
     pub scroll_speed: f32,
     /// Seconds a Warning GIF must be hovered before it's revealed.
     pub warning_delay: f32,
+    /// When NSFW GIFs are shown, show them normally instead of blurred.
+    pub uncensor_nsfw: bool,
     /// Settings from a newer LocalGif, kept as-is.
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -74,6 +76,7 @@ impl Default for Settings {
             hover_to_play: false,
             scroll_speed: 1.0,
             warning_delay: 0.0,
+            uncensor_nsfw: false,
             extra: Map::new(),
         }
     }

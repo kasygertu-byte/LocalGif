@@ -22,7 +22,8 @@ open above the icon.
   selected tags are shown. Click a tag chip's ✕ to remove it from the filter
 - **NSFW tag**: right-click a GIF → *Mark as NSFW* to show it blurred with a red NSFW label.
   It still copies normally when clicked; *Unmark as NSFW* restores it.
-  Uncheck **Show NSFW** to hide NSFW GIFs completely
+  Uncheck **Show NSFW** to hide NSFW GIFs completely, or turn on **Don't censor NSFW GIFs**
+  (Settings → General) to show them normally
 - **Warning tag**: right-click → *Mark as Warning* for an orange WARNING label. Like NSFW it's
   blurred, but it's revealed (and plays) while you hover over it, after an optional
   **Warning delay** (Settings → General, 0.1 s steps)
@@ -34,7 +35,7 @@ open above the icon.
   (add tags to all, or remove tags from all) or **Delete…** them (optionally also moving the
   original files to the Trash, see below). Esc or **Done** ends selecting
 - **⚙ Settings** page:
-  - *General*: scroll speed (0.25×–4×), show/hide NSFW, Warning delay, hover to play
+  - *General*: scroll speed (0.25×–4×), show/hide NSFW, don't censor NSFW, Warning delay, hover to play
   - *Tags*: every tag and how many GIFs have it
   - *GIFs*: a searchable list of every GIF (including hidden NSFW ones) with checkboxes for
     the same bulk Rename / Tags / Delete actions
