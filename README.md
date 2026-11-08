@@ -18,8 +18,14 @@ open above the icon.
   to add, click a tag to remove it, click a suggestion to reuse one). Tags show on the tile and
   are searchable
 - **Most used** tab: GIFs you've copied, most copied first
-- **NSFW tag**: right-click a GIF → *Mark as NSFW* to show it blurred with an NSFW label.
-  It still copies normally when clicked; *Unmark as NSFW* restores it
+- **Filter by tag**: pick one or more tags under the search bar; only GIFs that have **all**
+  selected tags are shown. Click a tag chip's ✕ to remove it from the filter
+- **NSFW tag**: right-click a GIF → *Mark as NSFW* to show it blurred with a red NSFW label.
+  It still copies normally when clicked; *Unmark as NSFW* restores it.
+  Uncheck **Show NSFW** to hide NSFW GIFs completely
+- **Warning tag**: right-click → *Mark as Warning* for an orange WARNING label. Like NSFW it's
+  blurred, but it's revealed (and plays) while you hover over it
+- **Hover to play**: when checked, GIFs stay still until you hover over them
 - **Search bar** that filters by label, tags and file name, in every tab. Press **/** to jump to it
 - **Global shortcut** **Ctrl+Alt+G** opens/closes the picker from any app (see below)
 - **Add GIFs** with `+ Add` → *GIF files…* or *Folder…* (subfolders included), or drag files or
@@ -29,7 +35,7 @@ open above the icon.
   and use count
 - Reads **animated WebP** too (Discord often saves "GIFs" as WebP, sometimes still named `.gif`)
 
-Right-click menu: Copy, Add/Remove favorite, Mark/Unmark as NSFW, Edit label, Edit tags, Reset label, Remove from library.
+Right-click menu: Copy, Add/Remove favorite, Mark/Unmark as NSFW, Mark/Unmark as Warning, Edit label, Edit tags, Reset label, Remove from library.
 
 ## Global shortcut
 
@@ -110,7 +116,7 @@ EOF
 | What | Windows | Linux | macOS |
 |---|---|---|---|
 | GIF files (copied here when added) | `%APPDATA%\LocalGif\gifs` | `~/.local/share/LocalGif/gifs` | `~/Library/Application Support/LocalGif/gifs` |
-| Labels, tags, favorites, NSFW, use counts, shortcut (`library.json`) | `%APPDATA%\LocalGif` | `~/.config/LocalGif` | `~/Library/Application Support/LocalGif` |
+| Labels, tags, favorites, NSFW/Warning, use counts, settings (`library.json`) | `%APPDATA%\LocalGif` | `~/.config/LocalGif` | `~/Library/Application Support/LocalGif` |
 
 Added GIFs are **copied** into the library folder, so moving or deleting the original file
 doesn't break anything. You can also put GIF files into that folder directly; they show up the

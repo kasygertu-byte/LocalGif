@@ -17,6 +17,8 @@ struct EntryMeta {
     favorite: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     nsfw: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    warning: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
     #[serde(default)]
@@ -40,12 +42,33 @@ fn default_hotkey() -> String {
     DEFAULT_HOTKEY.into()
 }
 
+/// View options, saved between sessions.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(default)]
+pub struct Settings {
+    /// Show GIFs marked NSFW (censored). When false they're hidden completely.
+    pub show_nsfw: bool,
+    /// GIFs stay on their first frame until hovered.
+    pub hover_to_play: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            show_nsfw: true,
+            hover_to_play: false,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct LibraryFile {
     gif_dir: PathBuf,
     /// Global shortcut, e.g. "Ctrl+Alt+G". Empty disables it.
     #[serde(default = "default_hotkey")]
     hotkey: String,
+    #[serde(default)]
+    settings: Settings,
     #[serde(default)]
     gifs: HashMap<String, EntryMeta>,
 }
@@ -60,6 +83,8 @@ pub struct GifEntry {
     pub favorite: bool,
     /// Shown censored (blurred with an NSFW label) in the grid.
     pub nsfw: bool,
+    /// Shown censored with an orange WARNING label; revealed while hovered.
+    pub warning: bool,
     pub tags: Vec<String>,
     /// Unix timestamp (seconds) of when the GIF was added.
     pub added: u64,
@@ -110,6 +135,7 @@ pub struct Library {
     config_path: PathBuf,
     pub gif_dir: PathBuf,
     pub hotkey: String,
+    pub settings: Settings,
     pub entries: Vec<GifEntry>,
     /// Files in the library folder that could not be loaded, as "name: reason".
     pub skipped: Vec<String>,
@@ -127,14 +153,15 @@ impl Library {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok());
 
-        let (gif_dir, hotkey, meta) = match file {
-            Some(f) => (f.gif_dir, f.hotkey, f.gifs),
+        let (gif_dir, hotkey, settings, meta) = match file {
+            Some(f) => (f.gif_dir, f.hotkey, f.settings, f.gifs),
             None => (
                 dirs::data_dir()
                     .unwrap_or_else(|| PathBuf::from("."))
                     .join("LocalGif")
                     .join("gifs"),
                 default_hotkey(),
+                Settings::default(),
                 HashMap::new(),
             ),
         };
@@ -144,6 +171,7 @@ impl Library {
             config_path,
             gif_dir,
             hotkey,
+            settings,
             entries: Vec::new(),
             skipped: Vec::new(),
             next_id: 0,
@@ -207,6 +235,7 @@ impl Library {
                 label: m.label,
                 favorite: m.favorite,
                 nsfw: m.nsfw,
+                warning: m.warning,
                 tags: m.tags,
                 added: m.added,
                 uses: m.uses,
@@ -271,6 +300,7 @@ impl Library {
                 label: None,
                 favorite: false,
                 nsfw: false,
+                warning: false,
                 tags: Vec::new(),
                 added: now_secs(),
                 uses: 0,
@@ -331,6 +361,18 @@ impl Library {
             e.favorite = !e.favorite;
             self.save();
         }
+    }
+
+    pub fn toggle_warning(&mut self, id: u64) {
+        if let Some(e) = self.get_mut(id) {
+            e.warning = !e.warning;
+            self.save();
+        }
+    }
+
+    pub fn set_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+        self.save();
     }
 
     pub fn toggle_nsfw(&mut self, id: u64) {
@@ -400,6 +442,7 @@ impl Library {
         let file = LibraryFile {
             gif_dir: self.gif_dir.clone(),
             hotkey: self.hotkey.clone(),
+            settings: self.settings,
             gifs: self.meta_map(),
         };
         let Ok(json) = serde_json::to_string_pretty(&file) else {
@@ -425,6 +468,7 @@ impl Library {
                         label: e.label.clone(),
                         favorite: e.favorite,
                         nsfw: e.nsfw,
+                        warning: e.warning,
                         tags: e.tags.clone(),
                         added: e.added,
                         uses: e.uses,

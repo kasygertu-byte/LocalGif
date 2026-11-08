@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 const ACCENT: Color32 = Color32::from_rgb(88, 101, 242);
 const STAR_YELLOW: Color32 = Color32::from_rgb(250, 199, 50);
+const NSFW_RED: Color32 = Color32::from_rgb(218, 55, 60);
+const WARNING_ORANGE: Color32 = Color32::from_rgb(232, 128, 22);
 const TILE_BG: Color32 = Color32::from_rgb(30, 31, 34);
 const GAP: f32 = 8.0;
 const MIN_COLUMN_WIDTH: f32 = 170.0;
@@ -75,6 +77,7 @@ enum Action {
     Copy(u64),
     ToggleFavorite(u64),
     ToggleNsfw(u64),
+    ToggleWarning(u64),
     EditLabel(u64),
     EditTags(u64),
     ResetLabel(u64),
@@ -88,6 +91,8 @@ pub struct LocalGifApp {
     clipboard: Option<arboard::Clipboard>,
     view: View,
     search: String,
+    /// Selected tags; only GIFs that have all of them are shown.
+    tag_filter: Vec<String>,
     toast: Option<Toast>,
     /// GIF id + label text being edited.
     editing: Option<(u64, String)>,
@@ -160,6 +165,7 @@ impl LocalGifApp {
             clipboard: None,
             view: View::All,
             search: String::new(),
+            tag_filter: Vec::new(),
             toast: None,
             editing: None,
             confirm_remove: None,
@@ -383,6 +389,9 @@ impl LocalGifApp {
                 });
             });
 
+        ui.add_space(6.0);
+        self.filter_row(ui);
+
         let skipped = &self.library.skipped;
         if !skipped.is_empty() {
             ui.add_space(4.0);
@@ -404,6 +413,93 @@ impl LocalGifApp {
         ui.add_space(8.0);
     }
 
+    /// Tag filter, plus the "Show NSFW" and "Hover to play" options.
+    fn filter_row(&mut self, ui: &mut egui::Ui) {
+        let all_tags = self.library.all_tags();
+        // Forget selected tags that no GIF has anymore.
+        self.tag_filter
+            .retain(|t| all_tags.iter().any(|a| a.eq_ignore_ascii_case(t)));
+
+        ui.horizontal(|ui| {
+            let title = if self.tag_filter.is_empty() {
+                "Filter by tag ⏷".to_string()
+            } else {
+                format!("Tags ({}) ⏷", self.tag_filter.len())
+            };
+            ui.add_enabled_ui(!all_tags.is_empty(), |ui| {
+                ui.menu_button(title, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            for tag in &all_tags {
+                                let pos = self
+                                    .tag_filter
+                                    .iter()
+                                    .position(|t| t.eq_ignore_ascii_case(tag));
+                                let mut on = pos.is_some();
+                                if ui.checkbox(&mut on, format!("#{tag}")).changed() {
+                                    match pos {
+                                        Some(i) => {
+                                            self.tag_filter.remove(i);
+                                        }
+                                        None => self.tag_filter.push(tag.clone()),
+                                    }
+                                }
+                            }
+                        });
+                    if !self.tag_filter.is_empty() {
+                        ui.separator();
+                        if ui.button("Clear tag filter").clicked() {
+                            self.tag_filter.clear();
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_disabled_hover_text(
+                    "Add tags to GIFs (right-click → Edit tags…) to filter by them",
+                );
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut settings = self.library.settings;
+                let a = ui
+                    .checkbox(&mut settings.hover_to_play, "Hover to play")
+                    .on_hover_text("GIFs stay still until you hover over them");
+                let b = ui
+                    .checkbox(&mut settings.show_nsfw, "Show NSFW")
+                    .on_hover_text("Uncheck to hide NSFW GIFs completely");
+                if a.changed() || b.changed() {
+                    self.library.set_settings(settings);
+                }
+            });
+        });
+
+        // Selected tags as chips; click one to remove it from the filter.
+        if !self.tag_filter.is_empty() {
+            let mut remove = None;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new("Showing GIFs tagged:")
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                for (i, tag) in self.tag_filter.iter().enumerate() {
+                    if ui
+                        .small_button(format!("#{tag}  ✕"))
+                        .on_hover_text("Remove from filter")
+                        .clicked()
+                    {
+                        remove = Some(i);
+                    }
+                }
+            });
+            if let Some(i) = remove {
+                self.tag_filter.remove(i);
+            }
+        }
+    }
+
     /// Draws the masonry grid and returns the actions the user triggered.
     fn gif_grid(&mut self, ui: &mut egui::Ui, visible_ids: &mut HashSet<u64>) -> Vec<Action> {
         let mut actions = Vec::new();
@@ -418,6 +514,12 @@ impl LocalGifApp {
                 View::All => true,
                 View::Favorites => e.favorite,
                 View::MostUsed => e.uses > 0,
+            })
+            .filter(|e| self.library.settings.show_nsfw || !e.nsfw)
+            .filter(|e| {
+                self.tag_filter
+                    .iter()
+                    .all(|f| e.tags.iter().any(|t| t.eq_ignore_ascii_case(f)))
             })
             .filter(|e| {
                 query.is_empty()
@@ -435,8 +537,11 @@ impl LocalGifApp {
         }
 
         if shown.is_empty() {
-            let msg = if !query.is_empty() {
-                "No GIFs match your search."
+            let filtered = !self.tag_filter.is_empty()
+                || (!self.library.settings.show_nsfw
+                    && self.library.entries.iter().any(|e| e.nsfw));
+            let msg = if !query.is_empty() || filtered {
+                "No GIFs match your search or filters."
             } else if self.view == View::Favorites {
                 "No favorites yet.\nHover over a GIF and click the star to add it here."
             } else if self.view == View::MostUsed {
@@ -472,6 +577,7 @@ impl LocalGifApp {
         // Start loading GIFs slightly before they scroll into view.
         let preload = clip.expand2(vec2(0.0, clip.height() * 0.75));
         let mut next_repaint: Option<f64> = None;
+        let hover_to_play = self.library.settings.hover_to_play;
 
         for (entry, (offset, size)) in shown.iter().zip(placed) {
             let rect = Rect::from_min_size(area.min + offset, size);
@@ -502,8 +608,9 @@ impl LocalGifApp {
 
             painter.rect_filled(rect, TILE_RADIUS, TILE_BG);
             match &item.state {
-                GifState::Ready(gif) if entry.nsfw => {
-                    // Censored: stretched tiny preview (looks blurred), darkened, NSFW label.
+                // NSFW: always censored. Warning: censored until hovered.
+                GifState::Ready(gif) if entry.nsfw || (entry.warning && !hovered) => {
+                    // Censored: stretched tiny preview (looks blurred), darkened, label on top.
                     let tex = &gif.censored;
                     egui::Image::from_texture(tex)
                         .uv(cover_uv(tex.size_vec2(), rect.size()))
@@ -512,7 +619,11 @@ impl LocalGifApp {
                     painter.rect_filled(rect, TILE_RADIUS, Color32::from_black_alpha(110));
                 }
                 GifState::Ready(gif) => {
-                    let (tex, until_next) = gif.frame_at(now);
+                    let (tex, until_next) = if hover_to_play && !hovered {
+                        (&gif.textures[0], None) // Still until hovered.
+                    } else {
+                        gif.frame_at(now)
+                    };
                     if let Some(dt) = until_next {
                         next_repaint = Some(next_repaint.map_or(dt, |r| r.min(dt)));
                     }
@@ -545,7 +656,9 @@ impl LocalGifApp {
             }
 
             if entry.nsfw {
-                draw_nsfw_badge(&painter, rect);
+                draw_badge(&painter, rect, "NSFW", NSFW_RED);
+            } else if entry.warning && !hovered {
+                draw_badge(&painter, rect, "WARNING", WARNING_ORANGE);
             }
             draw_label(&painter, rect, entry.display_name(), &entry.tags);
 
@@ -595,6 +708,7 @@ impl LocalGifApp {
             let has_label = entry.label.is_some();
             let is_fav = entry.favorite;
             let is_nsfw = entry.nsfw;
+            let is_warning = entry.warning;
             response.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
                     actions.push(Action::Copy(entry.id));
@@ -616,6 +730,19 @@ impl LocalGifApp {
                 };
                 if ui.button(nsfw_text).clicked() {
                     actions.push(Action::ToggleNsfw(entry.id));
+                    ui.close();
+                }
+                let warning_text = if is_warning {
+                    "Unmark as Warning"
+                } else {
+                    "Mark as Warning"
+                };
+                if ui
+                    .button(warning_text)
+                    .on_hover_text("Censored with an orange WARNING label; shown while hovered")
+                    .clicked()
+                {
+                    actions.push(Action::ToggleWarning(entry.id));
                     ui.close();
                 }
                 if ui.button("Edit label…").clicked() {
@@ -650,6 +777,7 @@ impl LocalGifApp {
             Action::Copy(id) => self.copy_gif(ctx, id),
             Action::ToggleFavorite(id) => self.library.toggle_favorite(id),
             Action::ToggleNsfw(id) => self.library.toggle_nsfw(id),
+            Action::ToggleWarning(id) => self.library.toggle_warning(id),
             Action::EditLabel(id) => {
                 if let Some(e) = self.library.get(id) {
                     self.editing = Some((id, e.display_name().to_string()));
@@ -1199,15 +1327,11 @@ fn draw_label(painter: &egui::Painter, rect: Rect, text: &str, tags: &[String]) 
     );
 }
 
-/// "NSFW" pill in the middle of a censored tile.
-fn draw_nsfw_badge(painter: &egui::Painter, rect: Rect) {
-    let galley = painter.layout_no_wrap("NSFW".into(), FontId::proportional(16.0), Color32::WHITE);
+/// "NSFW" / "WARNING" pill in the middle of a censored tile.
+fn draw_badge(painter: &egui::Painter, rect: Rect, text: &str, color: Color32) {
+    let galley = painter.layout_no_wrap(text.into(), FontId::proportional(16.0), Color32::WHITE);
     let pill = Rect::from_center_size(rect.center(), galley.size() + vec2(20.0, 8.0));
-    painter.rect_filled(
-        pill,
-        CornerRadius::same(255),
-        Color32::from_rgb(218, 55, 60),
-    );
+    painter.rect_filled(pill, CornerRadius::same(255), color);
     painter.galley(pill.center() - galley.size() / 2.0, galley, Color32::WHITE);
 }
 
