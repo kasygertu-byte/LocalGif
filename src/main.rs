@@ -2,6 +2,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod convert;
 mod events;
 mod hotkey;
 #[cfg(unix)]

@@ -17,6 +17,11 @@ pub enum AppEvent {
     Toggle,
     Show,
     Quit,
+    /// A WebP "GIF" finished converting to a real GIF for copying.
+    Converted {
+        id: u64,
+        result: Result<std::path::PathBuf, String>,
+    },
 }
 
 #[derive(Clone)]

@@ -18,6 +18,8 @@ const ACCENT: Color32 = Color32::from_rgb(88, 101, 242);
 const STAR_YELLOW: Color32 = Color32::from_rgb(250, 199, 50);
 const NSFW_RED: Color32 = Color32::from_rgb(218, 55, 60);
 const WARNING_ORANGE: Color32 = Color32::from_rgb(232, 128, 22);
+/// Discord's upload limit without Nitro (20 MB).
+const DISCORD_LIMIT: u64 = 20 * 1024 * 1024;
 const TILE_BG: Color32 = Color32::from_rgb(30, 31, 34);
 const GAP: f32 = 8.0;
 const MIN_COLUMN_WIDTH: f32 = 170.0;
@@ -284,7 +286,27 @@ impl LocalGifApp {
             return;
         };
         let path = entry.path.clone();
-        let name = entry.display_name().to_string();
+
+        // A WebP file (often saved from Discord, even when named .gif) can end up
+        // as a still image once sent. Convert it to a real GIF first, in the
+        // background; `AppEvent::Converted` finishes the copy.
+        if crate::convert::needs_conversion(&path) {
+            self.show_toast_for(ctx, "Converting to GIF…", 30.0);
+            let events = self.bg.events.clone();
+            std::thread::spawn(move || {
+                let result = crate::convert::to_gif(&path);
+                events.send(AppEvent::Converted { id, result });
+            });
+            return;
+        }
+        self.put_on_clipboard(ctx, id, path);
+    }
+
+    fn put_on_clipboard(&mut self, ctx: &egui::Context, id: u64, path: PathBuf) {
+        let Some(name) = self.library.get(id).map(|e| e.display_name().to_string()) else {
+            return;
+        };
+        let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > DISCORD_LIMIT);
 
         if self.clipboard.is_none() {
             match arboard::Clipboard::new() {
@@ -299,7 +321,15 @@ impl LocalGifApp {
         match result {
             Ok(()) => {
                 self.library.record_use(id);
-                self.show_toast(ctx, format!("Copied \"{name}\" - paste it with Ctrl+V"));
+                if too_big {
+                    self.show_toast_for(
+                        ctx,
+                        format!("Copied \"{name}\", but it's over 20 MB: Discord won't send it without Nitro"),
+                        6.0,
+                    );
+                } else {
+                    self.show_toast(ctx, format!("Copied \"{name}\" - paste it with Ctrl+V"));
+                }
             }
             Err(e) => self.show_toast(ctx, format!("Copy failed: {e}")),
         }
@@ -1281,6 +1311,12 @@ impl eframe::App for LocalGifApp {
                     self.widget.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+                AppEvent::Converted { id, result } => match result {
+                    Ok(gif) => self.put_on_clipboard(ctx, id, gif),
+                    Err(e) => {
+                        self.show_toast_for(ctx, format!("Couldn't convert to GIF: {e}"), 6.0)
+                    }
+                },
             }
         }
 

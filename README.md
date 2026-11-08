@@ -146,4 +146,10 @@ the search bar. Hover the warning to see why.
 - The GIF is copied as a *file* (CF_HDROP on Windows, `text/uri-list` on Linux, file URL on macOS),
   which is what Discord expects for pasting an animated GIF. Copying it as an image would lose the animation.
 - Discord's upload size limit still applies: 20 MB per file without Nitro.
+- GIFs that are really **WebP** files (common for GIFs saved from Discord, even when named `.gif`)
+  are converted to a real GIF when you copy them, because Discord can show a pasted WebP as a
+  still image once it's sent. The converted copy is cached in `~/.cache/LocalGif/converted`
+  (`%LOCALAPPDATA%\LocalGif\converted` on Windows); your library file isn't changed.
+- If sent GIFs only play when you hover over them, check Discord's *Settings → Accessibility →
+  Automatically play GIFs when Discord is focused*.
 - Video files (MP4/WebM) aren't supported. Discord's GIF picker (Tenor) often serves GIFs as MP4.
