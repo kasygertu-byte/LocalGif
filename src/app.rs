@@ -131,6 +131,10 @@ pub struct LocalGifApp {
     last_shown: Vec<u64>,
     /// Selected tags; only GIFs that have all of them are shown.
     tag_filter: Vec<String>,
+    /// Search box inside the "Filter by tag" dropdown.
+    tag_filter_search: String,
+    /// Search box on the Settings "Tags" tab.
+    settings_tag_search: String,
     toast: Option<Toast>,
     /// GIF id + label text being edited.
     editing: Option<(u64, String)>,
@@ -232,6 +236,8 @@ impl LocalGifApp {
             bulk: None,
             last_shown: Vec::new(),
             tag_filter: Vec::new(),
+            tag_filter_search: String::new(),
+            settings_tag_search: String::new(),
             toast: None,
             editing: None,
             confirm_remove: None,
@@ -579,10 +585,31 @@ impl LocalGifApp {
             };
             ui.add_enabled_ui(!all_tags.is_empty(), |ui| {
                 ui.menu_button(title, |ui| {
+                    let search = ui.add(
+                        egui::TextEdit::singleline(&mut self.tag_filter_search)
+                            .hint_text("Search tags")
+                            .desired_width(180.0),
+                    );
+                    // Type right away when the dropdown opens.
+                    if ui.ctx().memory(|m| m.focused().is_none()) {
+                        search.request_focus();
+                    }
+                    let query = self
+                        .tag_filter_search
+                        .trim()
+                        .trim_start_matches('#')
+                        .to_lowercase();
+                    let matching: Vec<&String> = all_tags
+                        .iter()
+                        .filter(|t| query.is_empty() || t.to_lowercase().contains(&query))
+                        .collect();
+                    if matching.is_empty() {
+                        ui.label(egui::RichText::new("No matching tags").color(Color32::GRAY));
+                    }
                     egui::ScrollArea::vertical()
                         .max_height(300.0)
                         .show(ui, |ui| {
-                            for tag in &all_tags {
+                            for tag in matching {
                                 let pos = self
                                     .tag_filter
                                     .iter()
@@ -744,6 +771,7 @@ impl LocalGifApp {
         }
         let warning_delay = self.library.settings.warning_delay as f64;
         let uncensor_nsfw = self.library.settings.uncensor_nsfw;
+        let uncensor_warning = self.library.settings.uncensor_warning;
         let mut hovered_id = None;
 
         for (entry, (offset, size)) in shown.iter().zip(placed) {
@@ -781,7 +809,8 @@ impl LocalGifApp {
             } else {
                 0.0
             };
-            let warning_revealed = peek || (hovered && hovered_for >= warning_delay);
+            let warning_revealed =
+                uncensor_warning || peek || (hovered && hovered_for >= warning_delay);
             if entry.warning && hovered && !warning_revealed {
                 // Repaint when the delay is over.
                 let wait = warning_delay - hovered_for;

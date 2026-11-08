@@ -64,6 +64,8 @@ pub struct Settings {
     pub warning_delay: f32,
     /// When NSFW GIFs are shown, show them normally instead of blurred.
     pub uncensor_nsfw: bool,
+    /// Show Warning GIFs normally instead of blurred.
+    pub uncensor_warning: bool,
     /// Settings from a newer LocalGif, kept as-is.
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -77,6 +79,7 @@ impl Default for Settings {
             scroll_speed: 1.0,
             warning_delay: 0.0,
             uncensor_nsfw: false,
+            uncensor_warning: false,
             extra: Map::new(),
         }
     }

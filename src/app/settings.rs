@@ -85,8 +85,15 @@ impl LocalGifApp {
                 });
                 ui.end_row();
 
+                ui.label("Warning GIFs");
+                save |= ui
+                    .checkbox(&mut s.uncensor_warning, "Don't censor Warning GIFs")
+                    .on_hover_text("Show Warning GIFs normally instead of blurred")
+                    .changed();
+                ui.end_row();
+
                 ui.label("Warning delay");
-                ui.horizontal(|ui| {
+                ui.add_enabled_ui(!s.uncensor_warning, |ui| {
                     let resp = ui
                         .add(
                             egui::Slider::new(&mut s.warning_delay, 0.0..=5.0)
@@ -94,7 +101,8 @@ impl LocalGifApp {
                                 .fixed_decimals(1)
                                 .suffix(" s"),
                         )
-                        .on_hover_text("How long to hover over a Warning GIF before it's shown");
+                        .on_hover_text("How long to hover over a Warning GIF before it's shown")
+                        .on_disabled_hover_text("Not used while Warning GIFs aren't censored");
                     save |= resp.drag_stopped() || (resp.changed() && !resp.dragged());
                 });
                 ui.end_row();
@@ -195,6 +203,26 @@ impl LocalGifApp {
             );
             return;
         }
+        ui.add(
+            egui::TextEdit::singleline(&mut self.settings_tag_search)
+                .hint_text("Search tags")
+                .desired_width(f32::INFINITY),
+        );
+        let query = self
+            .settings_tag_search
+            .trim()
+            .trim_start_matches('#')
+            .to_lowercase();
+        let counts: Vec<(String, usize)> = counts
+            .into_iter()
+            .filter(|(t, _)| query.is_empty() || t.to_lowercase().contains(&query))
+            .collect();
+        if counts.is_empty() {
+            ui.add_space(8.0);
+            ui.label(RichText::new("No matching tags").color(Color32::GRAY));
+            return;
+        }
+        ui.add_space(4.0);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -217,6 +245,7 @@ impl LocalGifApp {
 
     fn settings_gifs(&mut self, ui: &mut egui::Ui, visible_ids: &mut HashSet<u64>) {
         let s_uncensor = self.library.settings.uncensor_nsfw;
+        let s_uncensor_warning = self.library.settings.uncensor_warning;
         ui.add(
             egui::TextEdit::singleline(&mut self.settings_search)
                 .hint_text("Search by label, file name or tag")
@@ -268,7 +297,8 @@ impl LocalGifApp {
                             ui.allocate_exact_size(vec2(THUMB_SIZE, THUMB_SIZE), Sense::hover());
                         ui.painter().rect_filled(rect, 4, super::TILE_BG);
                         if let GifState::Ready(gif) = &item.state {
-                            let censor = (entry.nsfw && !s_uncensor) || entry.warning;
+                            let censor = (entry.nsfw && !s_uncensor)
+                                || (entry.warning && !s_uncensor_warning);
                             let tex = if censor {
                                 &gif.censored
                             } else {

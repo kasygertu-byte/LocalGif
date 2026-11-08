@@ -18,15 +18,16 @@ open above the icon.
   to add, click a tag to remove it, click a suggestion to reuse one). Tags show on the tile and
   are searchable
 - **Most used** tab: GIFs you've copied, most copied first
-- **Filter by tag**: pick one or more tags under the search bar; only GIFs that have **all**
-  selected tags are shown. Click a tag chip's ✕ to remove it from the filter
+- **Filter by tag**: pick one or more tags under the search bar (the dropdown has its own tag
+  search box); only GIFs that have **all** selected tags are shown. Click a tag chip's ✕ to remove it from the filter
 - **NSFW tag**: right-click a GIF → *Mark as NSFW* to show it blurred with a red NSFW label.
   It still copies normally when clicked; *Unmark as NSFW* restores it.
   Uncheck **Show NSFW** to hide NSFW GIFs completely, or turn on **Don't censor NSFW GIFs**
   (Settings → General) to show them normally
 - **Warning tag**: right-click → *Mark as Warning* for an orange WARNING label. Like NSFW it's
   blurred, but it's revealed (and plays) while you hover over it, after an optional
-  **Warning delay** (Settings → General, 0.1 s steps)
+  **Warning delay** (Settings → General, 0.1 s steps). Turn on **Don't censor Warning GIFs** to
+  show them normally
 - **Peek**: hold **Alt** and hover over an NSFW GIF to reveal it and play it
 - **Hover to play**: when checked, GIFs stay still until you hover over them
 - **Bulk select**: click **Select**, Ctrl+click GIFs, or **hold Ctrl and drag** across GIFs to
@@ -35,9 +36,9 @@ open above the icon.
   (add tags to all, or remove tags from all) or **Delete…** them (optionally also moving the
   original files to the Trash, see below). Esc or **Done** ends selecting
 - **⚙ Settings** page:
-  - *General*: scroll speed (0.25×–4×), show/hide NSFW, don't censor NSFW, Warning delay, hover to play,
+  - *General*: scroll speed (0.25×–4×), show/hide NSFW, don't censor NSFW, don't censor Warning, Warning delay, hover to play,
     start when I log in
-  - *Tags*: every tag and how many GIFs have it
+  - *Tags*: every tag and how many GIFs have it, with a search box
   - *GIFs*: a searchable list of every GIF (including hidden NSFW ones) with checkboxes for
     the same bulk Rename / Tags / Delete actions
 - **Enlarged preview**: click a GIF with the **scroll wheel** (middle-click), or right-click →

@@ -21,7 +21,8 @@ impl LocalGifApp {
         let id = entry.id;
         let alt = ctx.input(|i| i.modifiers.alt);
         let nsfw_censored = entry.nsfw && !self.library.settings.uncensor_nsfw;
-        let censored = (nsfw_censored || entry.warning) && !preview.reveal && !alt;
+        let warning_censored = entry.warning && !self.library.settings.uncensor_warning;
+        let censored = (nsfw_censored || warning_censored) && !preview.reveal && !alt;
         let (nsfw, warning) = (entry.nsfw, entry.warning);
 
         // Leave room around the image for the backdrop, the name and the buttons.
