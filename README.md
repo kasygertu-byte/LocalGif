@@ -14,11 +14,13 @@ open above the icon.
   Right-click a GIF → *Edit label…* to change it
 - **Favorites**: hover a GIF and click the star in its top-right corner;
   favorited GIFs appear in the *Favorites* tab
+- **NSFW tag**: right-click a GIF → *Mark as NSFW* to show it blurred with an NSFW label.
+  It still copies normally when clicked; *Unmark as NSFW* restores it
 - **Search bar** that filters by label (and file name), in both *All GIFs* and *Favorites*
 - **Add GIFs** with the `+ Add GIFs` button, or drag GIF files **or whole folders** onto the window
 - Reads **animated WebP** too (Discord often saves "GIFs" as WebP, sometimes still named `.gif`)
 
-Right-click menu: Copy, Add/Remove favorite, Edit label, Reset label, Remove from library.
+Right-click menu: Copy, Add/Remove favorite, Mark/Unmark as NSFW, Edit label, Reset label, Remove from library.
 
 ## Build & run
 
@@ -81,7 +83,7 @@ EOF
 | What | Windows | Linux | macOS |
 |---|---|---|---|
 | GIF files (copied here when added) | `%APPDATA%\LocalGif\gifs` | `~/.local/share/LocalGif/gifs` | `~/Library/Application Support/LocalGif/gifs` |
-| Labels & favorites (`library.json`) | `%APPDATA%\LocalGif` | `~/.config/LocalGif` | `~/Library/Application Support/LocalGif` |
+| Labels, favorites & NSFW tags (`library.json`) | `%APPDATA%\LocalGif` | `~/.config/LocalGif` | `~/Library/Application Support/LocalGif` |
 
 Added GIFs are **copied** into the library folder, so moving or deleting the original file
 doesn't break anything. You can also put GIF files into that folder directly; they show up the

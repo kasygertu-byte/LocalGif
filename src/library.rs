@@ -15,6 +15,8 @@ struct EntryMeta {
     label: Option<String>,
     #[serde(default)]
     favorite: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    nsfw: bool,
     #[serde(default)]
     added: u64,
 }
@@ -34,6 +36,8 @@ pub struct GifEntry {
     /// User-defined label. `None` means "use the file name".
     pub label: Option<String>,
     pub favorite: bool,
+    /// Shown censored (blurred with an NSFW label) in the grid.
+    pub nsfw: bool,
     /// Unix timestamp (seconds) of when the GIF was added.
     pub added: u64,
     /// Pixel size `[width, height]`, read from the GIF header.
@@ -150,6 +154,7 @@ impl Library {
                 path,
                 label: m.label,
                 favorite: m.favorite,
+                nsfw: m.nsfw,
                 added: m.added,
                 size,
             });
@@ -202,6 +207,7 @@ impl Library {
                 path: dest,
                 label: None,
                 favorite: false,
+                nsfw: false,
                 added: now_secs(),
                 size,
             });
@@ -223,6 +229,13 @@ impl Library {
     pub fn toggle_favorite(&mut self, id: u64) {
         if let Some(e) = self.get_mut(id) {
             e.favorite = !e.favorite;
+            self.save();
+        }
+    }
+
+    pub fn toggle_nsfw(&mut self, id: u64) {
+        if let Some(e) = self.get_mut(id) {
+            e.nsfw = !e.nsfw;
             self.save();
         }
     }
@@ -274,6 +287,7 @@ impl Library {
                     EntryMeta {
                         label: e.label.clone(),
                         favorite: e.favorite,
+                        nsfw: e.nsfw,
                         added: e.added,
                     },
                 )

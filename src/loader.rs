@@ -22,9 +22,16 @@ pub struct Frame {
     pub delay: f64,
 }
 
+pub struct DecodedGif {
+    pub frames: Vec<Frame>,
+    /// Tiny version of the first frame. Stretched to tile size it looks heavily
+    /// blurred, which is used as the censored preview of NSFW GIFs.
+    pub censored: egui::ColorImage,
+}
+
 pub struct Decoded {
     pub id: u64,
-    pub result: Result<Vec<Frame>, String>,
+    pub result: Result<DecodedGif, String>,
 }
 
 struct Job {
@@ -100,7 +107,7 @@ fn worker(shared: Arc<Shared>, tx: Sender<Decoded>, ctx: egui::Context) {
     }
 }
 
-fn decode(path: &Path) -> Result<Vec<Frame>, String> {
+fn decode(path: &Path) -> Result<DecodedGif, String> {
     let err = |e: image::ImageError| e.to_string();
     let format = image::ImageReader::open(path)
         .and_then(|r| r.with_guessed_format())
@@ -130,6 +137,7 @@ fn decode(path: &Path) -> Result<Vec<Frame>, String> {
     };
 
     let mut frames = Vec::new();
+    let mut censored = None;
     for frame in raw_frames {
         let (num, den) = frame.delay().numer_denom_ms();
         let mut ms = if den == 0 {
@@ -151,14 +159,28 @@ fn decode(path: &Path) -> Result<Vec<Frame>, String> {
             buf = image::imageops::resize(&buf, nw, nh, image::imageops::FilterType::Triangle);
         }
         let (w, h) = buf.dimensions();
+        if censored.is_none() {
+            censored = Some(censor(&buf));
+        }
         frames.push(Frame {
             image: egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], buf.as_raw()),
             delay: ms / 1000.0,
         });
     }
 
-    if frames.is_empty() {
-        return Err("GIF has no frames".into());
+    match censored {
+        Some(censored) => Ok(DecodedGif { frames, censored }),
+        None => Err("GIF has no frames".into()),
     }
-    Ok(frames)
+}
+
+/// Shrinks a frame to at most 8 px so no details remain.
+fn censor(buf: &image::RgbaImage) -> egui::ColorImage {
+    const SIZE: f32 = 8.0;
+    let (w, h) = buf.dimensions();
+    let scale = SIZE / w.max(h) as f32;
+    let nw = ((w as f32 * scale).round() as u32).max(1);
+    let nh = ((h as f32 * scale).round() as u32).max(1);
+    let small = image::imageops::resize(buf, nw, nh, image::imageops::FilterType::Triangle);
+    egui::ColorImage::from_rgba_unmultiplied([nw as usize, nh as usize], small.as_raw())
 }

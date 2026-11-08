@@ -25,6 +25,8 @@ enum View {
 
 struct LoadedGif {
     textures: Vec<TextureHandle>,
+    /// Blurred preview shown instead of the GIF when it is marked NSFW.
+    censored: TextureHandle,
     /// Cumulative end time of each frame, in seconds.
     frame_ends: Vec<f64>,
 }
@@ -68,6 +70,7 @@ struct Toast {
 enum Action {
     Copy(u64),
     ToggleFavorite(u64),
+    ToggleNsfw(u64),
     EditLabel(u64),
     ResetLabel(u64),
     AskRemove(u64),
@@ -226,11 +229,11 @@ impl LocalGifApp {
                 continue;
             };
             item.state = match decoded.result {
-                Ok(frames) => {
-                    let mut textures = Vec::with_capacity(frames.len());
-                    let mut frame_ends = Vec::with_capacity(frames.len());
+                Ok(gif) => {
+                    let mut textures = Vec::with_capacity(gif.frames.len());
+                    let mut frame_ends = Vec::with_capacity(gif.frames.len());
                     let mut t = 0.0;
-                    for (i, f) in frames.into_iter().enumerate() {
+                    for (i, f) in gif.frames.into_iter().enumerate() {
                         t += f.delay;
                         frame_ends.push(t);
                         textures.push(ctx.load_texture(
@@ -239,8 +242,14 @@ impl LocalGifApp {
                             TextureOptions::LINEAR,
                         ));
                     }
+                    let censored = ctx.load_texture(
+                        format!("gif-{}-censored", decoded.id),
+                        gif.censored,
+                        TextureOptions::LINEAR,
+                    );
                     GifState::Ready(LoadedGif {
                         textures,
+                        censored,
                         frame_ends,
                     })
                 }
@@ -399,6 +408,15 @@ impl LocalGifApp {
 
             painter.rect_filled(rect, TILE_RADIUS, TILE_BG);
             match &item.state {
+                GifState::Ready(gif) if entry.nsfw => {
+                    // Censored: stretched tiny preview (looks blurred), darkened, NSFW label.
+                    let tex = &gif.censored;
+                    egui::Image::from_texture(tex)
+                        .uv(cover_uv(tex.size_vec2(), rect.size()))
+                        .corner_radius(TILE_RADIUS)
+                        .paint_at(ui, rect);
+                    painter.rect_filled(rect, TILE_RADIUS, Color32::from_black_alpha(110));
+                }
                 GifState::Ready(gif) => {
                     let (tex, until_next) = gif.frame_at(now);
                     if let Some(dt) = until_next {
@@ -432,6 +450,9 @@ impl LocalGifApp {
                 }
             }
 
+            if entry.nsfw {
+                draw_nsfw_badge(&painter, rect);
+            }
             draw_label(&painter, rect, entry.display_name());
 
             if hovered {
@@ -479,6 +500,7 @@ impl LocalGifApp {
 
             let has_label = entry.label.is_some();
             let is_fav = entry.favorite;
+            let is_nsfw = entry.nsfw;
             response.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
                     actions.push(Action::Copy(entry.id));
@@ -491,6 +513,15 @@ impl LocalGifApp {
                 };
                 if ui.button(fav_text).clicked() {
                     actions.push(Action::ToggleFavorite(entry.id));
+                    ui.close();
+                }
+                let nsfw_text = if is_nsfw {
+                    "Unmark as NSFW"
+                } else {
+                    "Mark as NSFW"
+                };
+                if ui.button(nsfw_text).clicked() {
+                    actions.push(Action::ToggleNsfw(entry.id));
                     ui.close();
                 }
                 if ui.button("Edit label…").clicked() {
@@ -520,6 +551,7 @@ impl LocalGifApp {
         match action {
             Action::Copy(id) => self.copy_gif(ctx, id),
             Action::ToggleFavorite(id) => self.library.toggle_favorite(id),
+            Action::ToggleNsfw(id) => self.library.toggle_nsfw(id),
             Action::EditLabel(id) => {
                 if let Some(e) = self.library.get(id) {
                     self.editing = Some((id, e.display_name().to_string()));
@@ -800,6 +832,18 @@ fn draw_label(painter: &egui::Painter, rect: Rect, text: &str) {
         galley,
         Color32::WHITE,
     );
+}
+
+/// "NSFW" pill in the middle of a censored tile.
+fn draw_nsfw_badge(painter: &egui::Painter, rect: Rect) {
+    let galley = painter.layout_no_wrap("NSFW".into(), FontId::proportional(16.0), Color32::WHITE);
+    let pill = Rect::from_center_size(rect.center(), galley.size() + vec2(20.0, 8.0));
+    painter.rect_filled(
+        pill,
+        CornerRadius::same(255),
+        Color32::from_rgb(218, 55, 60),
+    );
+    painter.galley(pill.center() - galley.size() / 2.0, galley, Color32::WHITE);
 }
 
 /// Five-pointed star, filled when `filled` is true, outlined otherwise.
