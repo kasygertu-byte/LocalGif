@@ -1,0 +1,22 @@
+[package]
+name = "localgif"
+version = "0.1.0"
+edition = "2024"
+description = "Local GIF picker: browse your own GIFs, click to copy, paste into Discord or anywhere else."
+
+[dependencies]
+eframe = "0.37"
+image = { version = "0.25", default-features = false, features = ["gif"] }
+arboard = { version = "3.7", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.18"
+dirs = "6"
+
+[profile.release]
+opt-level = 3
+strip = true
+
+# Decode GIFs at a reasonable speed even in debug builds.
+[profile.dev.package."*"]
+opt-level = 2
