@@ -26,6 +26,14 @@ open above the icon.
 - **Warning tag**: right-click → *Mark as Warning* for an orange WARNING label. Like NSFW it's
   blurred, but it's revealed (and plays) while you hover over it
 - **Hover to play**: when checked, GIFs stay still until you hover over them
+- **Bulk select**: click **Select** (or Ctrl+click GIFs) to select several, then use the bar at
+  the bottom to **Rename…** (optionally numbered: "Label 1", "Label 2", …), edit **Tags…**
+  (add tags to all, or remove tags from all) or **Delete…** them. Esc or **Done** ends selecting
+- **⚙ Settings** page:
+  - *General*: scroll speed (0.25×–4×), show/hide NSFW, hover to play
+  - *Tags*: every tag and how many GIFs have it
+  - *GIFs*: a searchable list of every GIF (including hidden NSFW ones) with checkboxes for
+    the same bulk Rename / Tags / Delete actions
 - **Search bar** that filters by label, tags and file name, in every tab. Press **/** to jump to it
 - **Global shortcut** **Ctrl+Alt+G** opens/closes the picker from any app (see below)
 - **Add GIFs** with `+ Add` → *GIF files…* or *Folder…* (subfolders included), or drag files or

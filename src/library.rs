@@ -50,6 +50,8 @@ pub struct Settings {
     pub show_nsfw: bool,
     /// GIFs stay on their first frame until hovered.
     pub hover_to_play: bool,
+    /// Mouse-wheel scroll speed multiplier (1.0 = normal).
+    pub scroll_speed: f32,
 }
 
 impl Default for Settings {
@@ -57,6 +59,7 @@ impl Default for Settings {
         Self {
             show_nsfw: true,
             hover_to_play: false,
+            scroll_speed: 1.0,
         }
     }
 }
@@ -404,6 +407,67 @@ impl Library {
             e.tags = clean;
             self.save();
         }
+    }
+
+    /// Every tag with the number of GIFs that have it, sorted by name.
+    pub fn tag_counts(&self) -> Vec<(String, usize)> {
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for t in self.entries.iter().flat_map(|e| &e.tags) {
+            match counts.iter_mut().find(|(x, _)| x.eq_ignore_ascii_case(t)) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((t.clone(), 1)),
+            }
+        }
+        counts.sort_by_key(|(t, _)| t.to_lowercase());
+        counts
+    }
+
+    /// Adds `add` and removes `remove` (ignoring case) on every GIF in `ids`.
+    pub fn edit_tags_bulk(&mut self, ids: &[u64], add: &[String], remove: &[String]) {
+        for e in self.entries.iter_mut().filter(|e| ids.contains(&e.id)) {
+            e.tags
+                .retain(|t| !remove.iter().any(|r| r.eq_ignore_ascii_case(t)));
+            for t in add {
+                if !e.tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                    e.tags.push(t.clone());
+                }
+            }
+        }
+        self.save();
+    }
+
+    /// Sets several labels at once. Empty labels reset to the file name.
+    pub fn set_labels(&mut self, labels: &[(u64, String)]) {
+        for (id, label) in labels {
+            if let Some(e) = self.get_mut(*id) {
+                let label = label.trim();
+                e.label = (!label.is_empty()).then(|| label.to_string());
+            }
+        }
+        self.save();
+    }
+
+    /// Removes several GIFs. Returns how many were removed and the first error, if any.
+    pub fn remove_many(&mut self, ids: &[u64]) -> (usize, Option<String>) {
+        let mut removed = 0;
+        let mut first_error = None;
+        self.entries.retain(|e| {
+            if !ids.contains(&e.id) {
+                return true;
+            }
+            match fs::remove_file(&e.path) {
+                Ok(()) => {
+                    removed += 1;
+                    false
+                }
+                Err(err) => {
+                    first_error.get_or_insert_with(|| format!("{}: {err}", e.file_name));
+                    true
+                }
+            }
+        });
+        self.save();
+        (removed, first_error)
     }
 
     /// Every tag used in the library, sorted, without duplicates.

@@ -1,3 +1,6 @@
+mod bulk;
+mod settings;
+
 use crate::events::{AppEvent, EventSender};
 use crate::library::{Conflict, ConflictKind, GifEntry, Library};
 use crate::loader::Loader;
@@ -21,6 +24,19 @@ const MIN_COLUMN_WIDTH: f32 = 170.0;
 const TILE_RADIUS: u8 = 6;
 /// Seconds a GIF can stay off-screen before its frames are freed from memory.
 const EVICT_AFTER: f64 = 10.0;
+
+#[derive(PartialEq, Clone, Copy)]
+enum Page {
+    Grid,
+    Settings,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum SettingsTab {
+    General,
+    Tags,
+    Gifs,
+}
 
 #[derive(PartialEq, Clone, Copy)]
 enum View {
@@ -75,6 +91,7 @@ struct Toast {
 
 enum Action {
     Copy(u64),
+    ToggleSelect(u64),
     ToggleFavorite(u64),
     ToggleNsfw(u64),
     ToggleWarning(u64),
@@ -91,6 +108,17 @@ pub struct LocalGifApp {
     clipboard: Option<arboard::Clipboard>,
     view: View,
     search: String,
+    page: Page,
+    settings_tab: SettingsTab,
+    /// Search box on the settings "GIFs" list.
+    settings_search: String,
+    /// Bulk selection (GIF ids).
+    selected: HashSet<u64>,
+    /// "Select" mode: clicking a GIF selects it instead of copying it.
+    select_mode: bool,
+    bulk: Option<bulk::BulkDialog>,
+    /// Ids shown in the grid last frame, for "Select all".
+    last_shown: Vec<u64>,
     /// Selected tags; only GIFs that have all of them are shown.
     tag_filter: Vec<String>,
     toast: Option<Toast>,
@@ -165,6 +193,13 @@ impl LocalGifApp {
             clipboard: None,
             view: View::All,
             search: String::new(),
+            page: Page::Grid,
+            settings_tab: SettingsTab::General,
+            settings_search: String::new(),
+            selected: HashSet::new(),
+            select_mode: false,
+            bulk: None,
+            last_shown: Vec::new(),
             tag_filter: Vec::new(),
             toast: None,
             editing: None,
@@ -219,6 +254,7 @@ impl LocalGifApp {
             || self.confirm_remove.is_some()
             || self.tag_edit.is_some()
             || !self.conflicts.is_empty()
+            || self.bulk.is_some()
     }
 
     fn show_toast(&mut self, ctx: &egui::Context, text: impl Into<String>) {
@@ -342,6 +378,9 @@ impl LocalGifApp {
             );
             ui.selectable_value(&mut self.view, View::MostUsed, "Most used");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("⚙").on_hover_text("Settings").clicked() {
+                    self.page = Page::Settings;
+                }
                 let mut picked = None;
                 ui.menu_button("+ Add", |ui| {
                     if ui.button("GIF files…").clicked() {
@@ -362,6 +401,16 @@ impl LocalGifApp {
                 if let Some(paths) = picked {
                     let ctx = ui.ctx().clone();
                     self.add_files(&ctx, paths);
+                }
+                if ui
+                    .toggle_value(&mut self.select_mode, "Select")
+                    .on_hover_text(
+                        "Select several GIFs to rename, tag or delete them (or Ctrl+click)",
+                    )
+                    .clicked()
+                    && !self.select_mode
+                {
+                    self.selected.clear();
                 }
             });
         });
@@ -536,6 +585,8 @@ impl LocalGifApp {
             });
         }
 
+        self.last_shown = shown.iter().map(|e| e.id).collect();
+
         if shown.is_empty() {
             let filtered = !self.tag_filter.is_empty()
                 || (!self.library.settings.show_nsfw
@@ -586,14 +637,7 @@ impl LocalGifApp {
             }
 
             visible_ids.insert(entry.id);
-            let item = self.cache.entry(entry.id).or_insert_with(|| {
-                self.loader.request(entry.id, entry.path.clone());
-                CacheItem {
-                    state: GifState::Loading,
-                    last_seen: now,
-                }
-            });
-            item.last_seen = now;
+            let item = ensure_loaded(&mut self.cache, &self.loader, entry, now);
 
             if !rect.intersects(clip) {
                 continue;
@@ -662,6 +706,23 @@ impl LocalGifApp {
             }
             draw_label(&painter, rect, entry.display_name(), &entry.tags);
 
+            let selected = self.selected.contains(&entry.id);
+            if selected {
+                painter.rect_stroke(
+                    rect,
+                    TILE_RADIUS,
+                    Stroke::new(3.0, ACCENT),
+                    StrokeKind::Inside,
+                );
+            }
+            if selected || self.select_mode {
+                draw_checkbox(
+                    &painter,
+                    pos2(rect.left() + 16.0, rect.top() + 16.0),
+                    selected,
+                );
+            }
+
             if hovered {
                 painter.rect_stroke(
                     rect,
@@ -701,7 +762,10 @@ impl LocalGifApp {
                 }
             }
 
-            if response.clicked() {
+            let ctrl = ui.input(|i| i.modifiers.command);
+            if response.clicked() && (self.select_mode || ctrl) {
+                actions.push(Action::ToggleSelect(entry.id));
+            } else if response.clicked() {
                 actions.push(Action::Copy(entry.id));
             }
 
@@ -775,6 +839,11 @@ impl LocalGifApp {
     fn apply(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::Copy(id) => self.copy_gif(ctx, id),
+            Action::ToggleSelect(id) => {
+                if !self.selected.remove(&id) {
+                    self.selected.insert(id);
+                }
+            }
             Action::ToggleFavorite(id) => self.library.toggle_favorite(id),
             Action::ToggleNsfw(id) => self.library.toggle_nsfw(id),
             Action::ToggleWarning(id) => self.library.toggle_warning(id),
@@ -1105,6 +1174,18 @@ impl LocalGifApp {
 }
 
 impl eframe::App for LocalGifApp {
+    /// Applies the scroll speed setting to mouse-wheel / touchpad scrolling.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let speed = self.library.settings.scroll_speed;
+        if (speed - 1.0).abs() > f32::EPSILON {
+            for event in &mut raw_input.events {
+                if let egui::Event::MouseWheel { delta, .. } = event {
+                    *delta *= speed;
+                }
+            }
+        }
+    }
+
     /// Runs every frame, and also while the window is hidden
     /// (when woken by the tray icon, the global shortcut or `localgif --toggle`).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -1193,30 +1274,49 @@ impl eframe::App for LocalGifApp {
             ctx.memory_mut(|m| m.request_focus(search_id()));
         }
 
-        egui::Panel::top("top_bar")
-            .frame(
-                egui::Frame::new()
-                    .fill(ctx.global_style().visuals.panel_fill)
-                    .inner_margin(egui::Margin::symmetric(12, 0)),
-            )
-            .show(ui, |ui| self.top_bar(ui));
+        // Forget selected GIFs that were removed.
+        let lib = &self.library;
+        self.selected.retain(|id| lib.get(*id).is_some());
 
+        let panel_frame = egui::Frame::new()
+            .fill(ctx.global_style().visuals.panel_fill)
+            .inner_margin(egui::Margin::symmetric(12, 0));
         let mut actions = Vec::new();
         let mut visible_ids = HashSet::new();
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new()
-                    .fill(ctx.global_style().visuals.panel_fill)
-                    .inner_margin(egui::Margin::symmetric(12, 0)),
-            )
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
+
+        if self.page == Page::Settings {
+            egui::CentralPanel::default()
+                .frame(panel_frame)
+                .show(ui, |ui| self.settings_page(ui, &mut visible_ids));
+        } else {
+            egui::Panel::top("top_bar")
+                .frame(panel_frame)
+                .show(ui, |ui| self.top_bar(ui));
+
+            if self.select_mode || !self.selected.is_empty() {
+                egui::Panel::bottom("bulk_bar")
+                    .frame(panel_frame.inner_margin(egui::Margin::symmetric(12, 8)))
                     .show(ui, |ui| {
-                        actions = self.gif_grid(ui, &mut visible_ids);
-                        ui.add_space(12.0);
+                        let shown = self.last_shown.clone();
+                        self.bulk_bar(ui, &shown, true);
                     });
-            });
+            }
+
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::new()
+                        .fill(ctx.global_style().visuals.panel_fill)
+                        .inner_margin(egui::Margin::symmetric(12, 0)),
+                )
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            actions = self.gif_grid(ui, &mut visible_ids);
+                            ui.add_space(12.0);
+                        });
+                });
+        }
 
         for action in actions {
             self.apply(&ctx, action);
@@ -1245,18 +1345,71 @@ impl eframe::App for LocalGifApp {
         self.edit_tags_modal(&ctx);
         self.confirm_remove_modal(&ctx);
         self.conflict_modal(&ctx);
+        self.bulk_modal(&ctx);
         self.toast(&ctx);
+
+        // Esc leaves Settings / clears the selection before it hides the widget.
+        let mut esc_used = false;
+        if no_dialog
+            && (self.page == Page::Settings || self.select_mode || !self.selected.is_empty())
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            if self.page == Page::Settings {
+                self.page = Page::Grid;
+            } else {
+                self.select_mode = false;
+                self.selected.clear();
+            }
+            esc_used = true;
+        }
 
         if self.bg.tray.is_some() {
             if std::mem::take(&mut self.widget.start_hidden) {
                 self.hide_window(&ctx);
             }
             if no_dialog
+                && !esc_used
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
             {
                 self.hide_window(&ctx);
             }
         }
+    }
+}
+
+/// Returns the cache entry for a GIF, starting to decode it if needed.
+fn ensure_loaded<'a>(
+    cache: &'a mut HashMap<u64, CacheItem>,
+    loader: &Loader,
+    entry: &GifEntry,
+    now: f64,
+) -> &'a mut CacheItem {
+    let item = cache.entry(entry.id).or_insert_with(|| {
+        loader.request(entry.id, entry.path.clone());
+        CacheItem {
+            state: GifState::Loading,
+            last_seen: now,
+        }
+    });
+    item.last_seen = now;
+    item
+}
+
+/// Round selection checkbox drawn on a tile.
+fn draw_checkbox(painter: &egui::Painter, center: Pos2, checked: bool) {
+    if checked {
+        painter.circle_filled(center, 10.0, ACCENT);
+        painter.add(egui::Shape::line(
+            vec![
+                center + vec2(-4.5, 0.0),
+                center + vec2(-1.0, 3.5),
+                center + vec2(5.0, -3.5),
+            ],
+            Stroke::new(2.0, Color32::WHITE),
+        ));
+    } else {
+        painter.circle_filled(center, 10.0, Color32::from_black_alpha(140));
+        painter.circle_stroke(center, 9.0, Stroke::new(1.5, Color32::WHITE));
     }
 }
 
